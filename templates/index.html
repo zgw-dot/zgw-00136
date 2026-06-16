@@ -1,0 +1,768 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>合同条款风险标注训练工具</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  body { font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
+  .tab-btn.active { background:#2563eb; color:white; }
+  .status-training { background:#fef3c7; color:#92400e; }
+  .status-completed { background:#d1fae5; color:#065f46; }
+  .status-failed { background:#fee2e2; color:#991b1b; }
+  .badge { display:inline-block; padding:2px 8px; border-radius:10px; font-size:12px; }
+  details > summary { cursor:pointer; }
+  .mono { font-family: ui-monospace, Consolas, monospace; }
+  .tag-pill { display:inline-flex; align-items:center; gap:4px; padding:3px 10px; border-radius:999px; font-size:12px; font-weight:500; }
+  .scroll-x { overflow-x:auto; }
+  table.data { width:100%; border-collapse: collapse; font-size:13px; }
+  table.data th, table.data td { border:1px solid #e5e7eb; padding:6px 10px; text-align:left; }
+  table.data th { background:#f9fafb; font-weight:600; }
+  .cm-cell { width:64px; height:40px; text-align:center; vertical-align:middle; }
+</style>
+</head>
+<body class="bg-slate-50 min-h-screen">
+<header class="bg-gradient-to-r from-blue-700 to-indigo-700 text-white shadow-lg">
+  <div class="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
+    <div>
+      <h1 class="text-xl font-bold">合同条款风险标注训练工具</h1>
+      <p class="text-blue-100 text-sm mt-1">CSV导入 → 轻量分类器训练 → 评估 → 预测 → 人工改判</p>
+    </div>
+    <div id="topStatus" class="text-sm text-right"></div>
+  </div>
+  <nav class="max-w-7xl mx-auto px-6 pb-3 flex flex-wrap gap-2">
+    <button class="tab-btn active px-4 py-2 rounded-md text-sm font-medium bg-white/10 hover:bg-white/20 transition" data-tab="import">📥 数据导入</button>
+    <button class="tab-btn px-4 py-2 rounded-md text-sm font-medium bg-white/10 hover:bg-white/20 transition" data-tab="models">🏋️ 训练/模型</button>
+    <button class="tab-btn px-4 py-2 rounded-md text-sm font-medium bg-white/10 hover:bg-white/20 transition" data-tab="evaluate">📊 评估报告</button>
+    <button class="tab-btn px-4 py-2 rounded-md text-sm font-medium bg-white/10 hover:bg-white/20 transition" data-tab="predict">🔮 预测</button>
+    <button class="tab-btn px-4 py-2 rounded-md text-sm font-medium bg-white/10 hover:bg-white/20 transition" data-tab="corrections">✏️ 人工改判</button>
+    <button class="tab-btn px-4 py-2 rounded-md text-sm font-medium bg-white/10 hover:bg-white/20 transition" data-tab="versions">🧩 版本/回滚</button>
+  </nav>
+</header>
+
+<main class="max-w-7xl mx-auto px-6 py-6">
+
+<section id="tab-import" class="tab-panel">
+  <h2 class="text-lg font-bold mb-4">📥 数据导入</h2>
+  <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+    <div class="bg-white p-5 rounded-lg shadow border">
+      <h3 class="font-semibold mb-3">1. 上传CSV并校验</h3>
+      <p class="text-sm text-slate-600 mb-3">必填列：<code class="bg-slate-100 px-1 rounded">条款文本</code>、<code class="bg-slate-100 px-1 rounded">风险标签</code>；可选列：<code class="bg-slate-100 px-1 rounded">合同类型</code>、<code class="bg-slate-100 px-1 rounded">时间</code>。标签须为 <b>付款/违约/自动续约</b>。</p>
+      <input id="importFile" type="file" accept=".csv" class="block w-full text-sm mb-3" />
+      <div class="flex gap-2 flex-wrap">
+        <button id="btnValidate" class="bg-slate-200 hover:bg-slate-300 text-slate-800 px-4 py-2 rounded text-sm font-medium">校验CSV</button>
+        <button id="btnImport" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded text-sm font-medium">导入并创建数据集版本</button>
+        <button id="btnLoadSample" class="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded text-sm font-medium">加载内置样例数据</button>
+      </div>
+      <div class="mt-3">
+        <label class="text-sm flex items-center gap-2"><input type="checkbox" id="dropEmptyText" checked />导入时丢弃空条款文本</label>
+        <input id="importNote" placeholder="备注（可选）" class="w-full mt-2 px-3 py-2 border rounded text-sm" />
+      </div>
+      <div id="validateResult" class="mt-4 text-sm"></div>
+    </div>
+    <div class="bg-white p-5 rounded-lg shadow border">
+      <h3 class="font-semibold mb-3">2. 已导入数据集版本</h3>
+      <div id="datasetList" class="space-y-2 max-h-[520px] overflow-y-auto"></div>
+    </div>
+  </div>
+</section>
+
+<section id="tab-models" class="tab-panel hidden">
+  <h2 class="text-lg font-bold mb-4">🏋️ 训练 & 模型版本</h2>
+  <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+    <div class="bg-white p-5 rounded-lg shadow border">
+      <h3 class="font-semibold mb-3">启动训练</h3>
+      <div class="space-y-3 text-sm">
+        <div>
+          <label class="block font-medium mb-1">选择数据集版本</label>
+          <select id="trainDataset" class="w-full px-3 py-2 border rounded"></select>
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="block font-medium mb-1">特征维度 (max_features)</label>
+            <input type="number" id="hpMaxFeat" value="5000" class="w-full px-3 py-2 border rounded" />
+          </div>
+          <div>
+            <label class="block font-medium mb-1">N-gram (1-2)</label>
+            <select id="hpNgram" class="w-full px-3 py-2 border rounded">
+              <option value="1">1</option>
+              <option value="2" selected>2</option>
+              <option value="3">3</option>
+            </select>
+          </div>
+          <div>
+            <label class="block font-medium mb-1">正则化 C</label>
+            <input type="number" step="0.1" id="hpC" value="1.0" class="w-full px-3 py-2 border rounded" />
+          </div>
+          <div>
+            <label class="block font-medium mb-1">测试集比例</label>
+            <input type="number" step="0.05" id="hpTest" value="0.2" class="w-full px-3 py-2 border rounded" />
+          </div>
+        </div>
+        <label class="flex items-center gap-2"><input type="checkbox" id="autoActivate" />训练成功后自动激活</label>
+        <input id="trainNote" placeholder="训练备注（可选）" class="w-full px-3 py-2 border rounded" />
+        <div class="flex gap-2">
+          <button id="btnTrain" class="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded font-medium">开始训练</button>
+          <button id="btnRefreshModels" class="bg-slate-200 hover:bg-slate-300 px-4 py-2 rounded font-medium">刷新模型列表</button>
+        </div>
+        <div id="trainResult" class="mt-3"></div>
+      </div>
+    </div>
+    <div class="bg-white p-5 rounded-lg shadow border">
+      <h3 class="font-semibold mb-3">模型版本列表</h3>
+      <div id="modelList" class="space-y-2 max-h-[560px] overflow-y-auto"></div>
+    </div>
+  </div>
+</section>
+
+<section id="tab-evaluate" class="tab-panel hidden">
+  <h2 class="text-lg font-bold mb-4">📊 评估报告（可追溯版本）</h2>
+  <div class="bg-white p-5 rounded-lg shadow border mb-4">
+    <div class="flex flex-wrap gap-3 items-end">
+      <div>
+        <label class="block text-sm font-medium mb-1">模型版本（可选，默认现役）</label>
+        <select id="evalModel" class="px-3 py-2 border rounded text-sm"></select>
+      </div>
+      <div>
+        <label class="block text-sm font-medium mb-1">数据集版本（可选，默认训练时用的）</label>
+        <select id="evalDataset" class="px-3 py-2 border rounded text-sm"></select>
+      </div>
+      <div>
+        <label class="block text-sm font-medium mb-1">测试比例</label>
+        <input type="number" id="evalRatio" step="0.05" value="0.2" class="px-3 py-2 border rounded text-sm w-24" />
+      </div>
+      <button id="btnRunEval" class="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded text-sm font-medium">运行评估</button>
+      <button id="btnRefreshEval" class="bg-slate-200 hover:bg-slate-300 px-4 py-2 rounded text-sm font-medium">刷新历史</button>
+    </div>
+  </div>
+  <div class="grid grid-cols-1 xl:grid-cols-3 gap-4">
+    <div class="xl:col-span-1 bg-white p-4 rounded-lg shadow border">
+      <h3 class="font-semibold mb-3 text-sm">历史评估记录</h3>
+      <div id="evalHistory" class="space-y-2 max-h-[600px] overflow-y-auto"></div>
+    </div>
+    <div class="xl:col-span-2 bg-white p-4 rounded-lg shadow border">
+      <h3 class="font-semibold mb-3 text-sm">评估详情</h3>
+      <div id="evalDetail" class="text-sm text-slate-500">选择或运行一次评估后查看详情</div>
+    </div>
+  </div>
+</section>
+
+<section id="tab-predict" class="tab-panel hidden">
+  <h2 class="text-lg font-bold mb-4">🔮 条款预测</h2>
+  <div id="predictWarn" class="mb-4"></div>
+  <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+    <div class="bg-white p-5 rounded-lg shadow border">
+      <h3 class="font-semibold mb-3">单条预测</h3>
+      <textarea id="predText" rows="5" placeholder="粘贴条款文本，例如：如卖方逾期交付超过10日，买方有权要求支付合同总金额10%的违约金" class="w-full px-3 py-2 border rounded text-sm"></textarea>
+      <input id="predCT" placeholder="合同类型（可选，增强特征）" class="w-full mt-2 px-3 py-2 border rounded text-sm" />
+      <div class="flex gap-2 mt-3">
+        <button id="btnPredictOne" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded text-sm font-medium">预测</button>
+        <select id="predModel" class="px-3 py-2 border rounded text-sm"></select>
+      </div>
+      <div id="predResult" class="mt-4 text-sm"></div>
+    </div>
+    <div class="bg-white p-5 rounded-lg shadow border">
+      <h3 class="font-semibold mb-3">CSV批量预测</h3>
+      <p class="text-sm text-slate-600 mb-3">CSV需含 <code class="bg-slate-100 px-1 rounded">条款文本</code> 列；如含 <code class="bg-slate-100 px-1 rounded">风险标签</code> 列将显示为真实标签用于对照。</p>
+      <input id="predFile" type="file" accept=".csv" class="block w-full text-sm mb-3" />
+      <button id="btnPredictCsv" class="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded text-sm font-medium">批量预测</button>
+      <div id="predCsvResult" class="mt-4 text-sm"></div>
+    </div>
+  </div>
+</section>
+
+<section id="tab-corrections" class="tab-panel hidden">
+  <h2 class="text-lg font-bold mb-4">✏️ 人工改判（记录原因，归属模型版本）</h2>
+  <div id="correctionWarn" class="mb-4"></div>
+  <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+    <div class="bg-white p-5 rounded-lg shadow border">
+      <h3 class="font-semibold mb-3">新建改判</h3>
+      <div class="space-y-2 text-sm">
+        <textarea id="corrText" rows="3" placeholder="条款文本" class="w-full px-3 py-2 border rounded"></textarea>
+        <div class="grid grid-cols-2 gap-2">
+          <div>
+            <label class="block text-xs text-slate-600 mb-1">模型预测标签</label>
+            <select id="corrPred" class="w-full px-3 py-2 border rounded">
+              <option value="付款">付款</option><option value="违约">违约</option><option value="自动续约">自动续约</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-xs text-slate-600 mb-1">人工改判标签</label>
+            <select id="corrLabel" class="w-full px-3 py-2 border rounded">
+              <option value="付款">付款</option><option value="违约">违约</option><option value="自动续约">自动续约</option>
+            </select>
+          </div>
+        </div>
+        <textarea id="corrReason" rows="3" placeholder="改判原因（必填）" class="w-full px-3 py-2 border rounded"></textarea>
+        <label class="block text-xs text-slate-600">归属模型版本（默认现役）</label>
+        <select id="corrModel" class="w-full px-3 py-2 border rounded"></select>
+        <button id="btnSaveCorr" class="bg-rose-600 hover:bg-rose-700 text-white px-4 py-2 rounded font-medium">保存改判</button>
+        <div id="corrResult" class="text-sm"></div>
+      </div>
+    </div>
+    <div class="bg-white p-5 rounded-lg shadow border">
+      <h3 class="font-semibold mb-3">历史改判</h3>
+      <div class="flex gap-2 mb-3 text-sm">
+        <label><input type="checkbox" id="corrFilterActive" checked />仅显示现役模型</label>
+        <button id="btnRefreshCorr" class="bg-slate-200 hover:bg-slate-300 px-3 py-1 rounded">刷新</button>
+      </div>
+      <div id="corrList" class="space-y-2 max-h-[540px] overflow-y-auto"></div>
+    </div>
+  </div>
+</section>
+
+<section id="tab-versions" class="tab-panel hidden">
+  <h2 class="text-lg font-bold mb-4">🧩 版本管理 & 回滚日志</h2>
+  <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+    <div class="bg-white p-5 rounded-lg shadow border">
+      <h3 class="font-semibold mb-3">激活/回滚模型版本</h3>
+      <p class="text-sm text-slate-600 mb-3">点击"激活"即可切换现役模型；所有激活/回滚都会写入日志，便于追溯。</p>
+      <div id="rollbackModelList" class="space-y-2 max-h-[500px] overflow-y-auto"></div>
+    </div>
+    <div class="bg-white p-5 rounded-lg shadow border">
+      <h3 class="font-semibold mb-3">回滚 / 激活日志</h3>
+      <div id="rollbackLogList" class="space-y-2 max-h-[560px] overflow-y-auto"></div>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<div id="toast" class="fixed bottom-6 right-6 z-50 hidden px-4 py-3 rounded-lg shadow-lg text-white text-sm"></div>
+
+<script>
+const API = "";
+const $ = (id) => document.getElementById(id);
+
+function toast(msg, type="info") {
+  const el = $("toast");
+  el.className = `fixed bottom-6 right-6 z-50 px-4 py-3 rounded-lg shadow-lg text-white text-sm ${
+    type==="error" ? "bg-rose-600" : type==="success" ? "bg-emerald-600" : "bg-slate-800"
+  }`;
+  el.textContent = msg;
+  el.classList.remove("hidden");
+  setTimeout(() => el.classList.add("hidden"), 3500);
+}
+
+function fmtTime(t) {
+  if (!t) return "-";
+  return t.replace("T", " ").slice(0, 19);
+}
+
+function pct(v) { return (v*100).toFixed(2) + "%"; }
+
+function statusBadge(s) {
+  const map = {training:"训练中", completed:"已完成", failed:"失败"};
+  return `<span class="badge status-${s}">${map[s]||s}</span>`;
+}
+
+async function loadTopStatus() {
+  try {
+    const r = await fetch(API + "/api/info").then(x=>x.json());
+    const am = r.active_model;
+    $("topStatus").innerHTML = `
+      <div>现役模型：<b>${am ? am.version : "无"}</b> ${am ? statusBadge(am.training_status) : ""}</div>
+      <div class="text-blue-100 text-xs mt-1">数据集 ${r.dataset_count} 个 · 模型 ${r.model_count} 个</div>
+    `;
+  } catch(e){}
+}
+
+/* ---- Tabs ---- */
+document.querySelectorAll(".tab-btn").forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
+    document.querySelectorAll(".tab-panel").forEach(p => p.classList.add("hidden"));
+    btn.classList.add("active");
+    $("tab-" + btn.dataset.tab).classList.remove("hidden");
+    if (btn.dataset.tab === "evaluate") refreshEvalSelects();
+    if (btn.dataset.tab === "predict") { refreshPredictModel(); checkPredictReady(); }
+    if (btn.dataset.tab === "corrections") { refreshCorrModel(); refreshCorrList(); checkCorrReady(); }
+    if (btn.dataset.tab === "versions") { refreshRollbackList(); refreshRollbackLogs(); }
+  });
+});
+
+/* ====== 数据导入 ====== */
+$("btnValidate").onclick = async () => {
+  const f = $("importFile").files[0];
+  if (!f) return toast("请选择CSV文件", "error");
+  const fd = new FormData(); fd.append("file", f);
+  const res = await fetch(API + "/api/datasets/validate", {method:"POST", body:fd}).then(x=>x.json());
+  renderValidate(res);
+};
+
+function renderValidate(res) {
+  const el = $("validateResult");
+  const ok = res.valid ? "✅ 通过" : "❌ 不通过";
+  let html = `<div class="${res.valid?"bg-emerald-50 border-emerald-300":"bg-rose-50 border-rose-300"} border rounded p-3">
+    <div class="font-semibold mb-2">校验结果：${ok}（${res.filename || "-"}）</div>
+    <div class="grid grid-cols-2 gap-1 text-xs mb-2">
+      <span>总行数：<b>${res.row_count}</b></span>
+      <span>有效行：<b>${res.valid_rows}</b></span>
+      <span>带标签：<b>${res.labeled_count}</b></span>
+      <span>重复行：<b>${res.duplicate_count}</b></span>
+      <span>空文本：<b>${res.empty_text_count}</b></span>
+      <span>空标签：<b>${res.empty_label_count}</b></span>
+      <span>非法标签：<b>${res.invalid_label_count}</b></span>
+      <span>类别数：<b>${Object.keys(res.label_distribution||{}).length}</b></span>
+    </div>
+    <div class="mb-2"><b>标签分布：</b>`;
+  for (const [k,v] of Object.entries(res.label_distribution||{})) html += ` <span class="tag-pill bg-blue-100 text-blue-800">${k}: ${v}</span>`;
+  html += `</div>`;
+  if (res.errors?.length) html += `<div class="text-rose-700"><b>错误：</b><ul class="list-disc ml-5">${res.errors.map(e=>`<li>${e}</li>`).join("")}</ul></div>`;
+  if (res.warnings?.length) html += `<div class="text-amber-700 mt-1"><b>警告：</b><ul class="list-disc ml-5">${res.warnings.map(e=>`<li>${e}</li>`).join("")}</ul></div>`;
+  html += `</div>`;
+  el.innerHTML = html;
+}
+
+$("btnImport").onclick = async () => {
+  const f = $("importFile").files[0];
+  if (!f) return toast("请选择CSV文件", "error");
+  const fd = new FormData();
+  fd.append("file", f);
+  fd.append("note", $("importNote").value || "");
+  fd.append("drop_empty_text", $("dropEmptyText").checked ? "true" : "false");
+  const res = await fetch(API + "/api/datasets/import", {method:"POST", body:fd}).then(x=>x.json());
+  if (res.success) {
+    toast(`导入成功，数据集版本：${res.dataset_version}`, "success");
+    renderValidate({...res.validation, filename: f.name, valid: true});
+    await refreshDatasets(); await refreshTrainSelects(); refreshEvalSelects(); refreshRollbackList();
+  } else {
+    toast("导入失败：" + res.error, "error");
+    if (res.validation) renderValidate({...res.validation, filename: f.name});
+  }
+};
+
+$("btnLoadSample").onclick = async () => {
+  toast("尝试从样例路径导入…", "info");
+  const res = await fetch(API + "/api/info").then(x=>x.json());
+  const resp = await fetch(API + "/sample_data/contracts_sample.csv");
+  if (!resp.ok) { toast("内置样例文件不可直接访问，请手动选择 sample_data/contracts_sample.csv", "error"); return; }
+  const blob = await resp.blob();
+  const file = new File([blob], "contracts_sample.csv", {type:"text/csv"});
+  const dt = new DataTransfer(); dt.items.add(file); $("importFile").files = dt.files;
+  toast("已填入样例文件路径，点击'导入并创建数据集版本'", "success");
+};
+
+async function refreshDatasets() {
+  const list = await fetch(API + "/api/datasets").then(x=>x.json());
+  const el = $("datasetList");
+  if (!list.length) { el.innerHTML = `<div class="text-sm text-slate-500">暂无数据集</div>`; return; }
+  el.innerHTML = list.map(d => `
+    <div class="border rounded p-3 text-sm">
+      <div class="flex justify-between items-start">
+        <div>
+          <div class="font-mono text-xs text-slate-500">${d.version}</div>
+          <div class="font-semibold">${d.filename}</div>
+        </div>
+        <span class="badge ${d.labeled_count>0?"bg-emerald-100 text-emerald-800":"bg-rose-100 text-rose-800"}">${d.labeled_count} 已标注</span>
+      </div>
+      <div class="text-xs text-slate-500 mt-1">${d.row_count} 行 · ${fmtTime(d.created_at)}${d.note?` · 📝${d.note}`:""}</div>
+      <div class="mt-2 flex flex-wrap gap-1">` +
+        Object.entries(d.label_distribution||{}).map(([k,v]) =>
+          `<span class="tag-pill bg-blue-50 text-blue-700 border border-blue-200">${k}: ${v}</span>`).join("")
+      + `</div>
+      <div class="mt-2 text-xs"><a class="text-blue-600 hover:underline" href="${API}/api/datasets/${d.version}/download" target="_blank">下载该版本CSV</a></div>
+    </div>
+  `).join("");
+}
+
+/* ====== 训练 / 模型 ====== */
+async function refreshTrainSelects() {
+  const list = await fetch(API + "/api/datasets").then(x=>x.json());
+  const s = $("trainDataset"); s.innerHTML = "";
+  if (!list.length) { s.innerHTML = `<option value="">请先导入数据集</option>`; return; }
+  list.forEach(d => {
+    const o = document.createElement("option");
+    o.value = d.version;
+    o.textContent = `${d.version} · ${d.filename} (${d.labeled_count}条)`;
+    s.appendChild(o);
+  });
+}
+
+$("btnTrain").onclick = async () => {
+  const ds = $("trainDataset").value;
+  if (!ds) return toast("请先选择/导入数据集", "error");
+  $("btnTrain").disabled = true; $("btnTrain").textContent = "训练中…";
+  const hp = {
+    vectorizer: {
+      max_features: +$("hpMaxFeat").value,
+      ngram_range: [1, +$("hpNgram").value],
+      min_df: 1,
+    },
+    classifier: {
+      C: +$("hpC").value,
+      class_weight: "balanced", max_iter: 1000, solver: "liblinear",
+    },
+    split: {test_size: +$("hpTest").value, random_state: 42},
+  };
+  const body = {dataset_version: ds, hyperparams: hp, note: $("trainNote").value || "", auto_activate: $("autoActivate").checked};
+  const res = await fetch(API + "/api/models/train", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body)}).then(x=>x.json());
+  $("btnTrain").disabled = false; $("btnTrain").textContent = "开始训练";
+  if (res.success) {
+    toast(`训练成功：模型版本 ${res.model_version}（测试acc ${pct(res.test_accuracy)}）${res.auto_activated?" · 已自动激活":""}`, "success");
+    $("trainResult").innerHTML = `
+      <div class="bg-emerald-50 border border-emerald-300 rounded p-3">
+        <div class="font-semibold mb-1">✅ 训练完成</div>
+        <div class="text-xs">模型版本：<span class="font-mono">${res.model_version}</span></div>
+        <div class="text-xs">特征数量：${res.feature_count} · 类别：${res.classes.join(" / ")}</div>
+        <div class="text-xs mt-1">训练集精度：<b>${pct(res.train_accuracy)}</b> · 测试集精度：<b>${pct(res.test_accuracy)}</b></div>
+        <div class="text-xs">样本：训练 ${res.train_samples} · 测试 ${res.test_samples}</div>
+      </div>`;
+    await refreshModels(); refreshEvalSelects(); refreshPredictModel(); refreshCorrModel(); refreshRollbackList(); loadTopStatus();
+  } else {
+    toast("训练失败：" + res.error, "error");
+    $("trainResult").innerHTML = `<div class="bg-rose-50 border border-rose-300 rounded p-3 text-rose-700">
+      <div class="font-semibold">❌ 训练失败（未替换现役模型）</div>
+      <div class="text-xs mt-1 whitespace-pre-wrap">${res.error}</div></div>`;
+  }
+};
+
+$("btnRefreshModels").onclick = refreshModels;
+
+async function refreshModels() {
+  const list = await fetch(API + "/api/models").then(x=>x.json());
+  const el = $("modelList");
+  if (!list.length) { el.innerHTML = `<div class="text-sm text-slate-500">暂无模型</div>`; return; }
+  el.innerHTML = list.map(m => `
+    <div class="border rounded p-3 text-sm">
+      <div class="flex justify-between items-start flex-wrap gap-2">
+        <div>
+          <div class="flex items-center gap-2">
+            <span class="font-mono text-xs">${m.version}</span>
+            ${m.is_active ? `<span class="tag-pill bg-amber-400 text-amber-900 font-semibold">★ 现役</span>` : ""}
+            ${statusBadge(m.training_status)}
+          </div>
+          <div class="text-xs text-slate-500 mt-1">数据 ${m.dataset_version} · ${fmtTime(m.created_at)}${m.training_completed_at?` · 完成 ${fmtTime(m.training_completed_at)}`:""}</div>
+          ${m.note ? `<div class="text-xs text-slate-600 mt-1">📝 ${m.note}</div>` : ""}
+          ${m.error_message ? `<details class="mt-1"><summary class="text-xs text-rose-600">查看错误日志</summary><pre class="text-xs mt-1 bg-rose-50 p-2 rounded overflow-x-auto mono">${m.error_message.slice(0,800)}</pre></details>`:""}
+        </div>
+        <div class="flex flex-col gap-1">
+          ${m.training_status === "completed" ? `
+            <button onclick="activateModel('${m.version}')" class="${m.is_active?"bg-slate-300 text-slate-500 cursor-not-allowed":"bg-blue-600 hover:bg-blue-700 text-white"} px-3 py-1 rounded text-xs" ${m.is_active?"disabled":""}>${m.is_active?"已是现役":"激活为现役"}</button>
+            <button onclick="runEvalForModel('${m.version}')" class="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1 rounded text-xs">运行评估</button>
+          `:""}
+        </div>
+      </div>
+      ${m.training_status === "completed" ? `
+        <div class="mt-2 text-xs">特征：${m.feature_count||0} 个
+          · 超参：<code class="bg-slate-100 px-1">C=${m.hyperparams?.classifier?.C || "-"} / mf=${m.hyperparams?.vectorizer?.max_features || "-"} / ng=${JSON.stringify(m.hyperparams?.vectorizer?.ngram_range||[])} / test=${m.hyperparams?.split?.test_size || "-"}</code>
+        </div>`:""}
+    </div>
+  `).join("");
+}
+
+async function activateModel(v) {
+  const note = prompt("激活/回滚备注（可选）：");
+  const fd = new FormData(); if (note) fd.append("operator_note", note);
+  const res = await fetch(API + "/api/models/" + v + "/activate", {method:"POST", body: fd}).then(x=>x.json());
+  if (res.success) { toast("已激活 " + v, "success"); refreshModels(); loadTopStatus(); refreshPredictModel(); refreshCorrModel(); refreshRollbackList(); refreshRollbackLogs(); }
+  else toast(res.detail || "激活失败", "error");
+}
+window.activateModel = activateModel;
+
+async function runEvalForModel(v) {
+  document.querySelector('[data-tab="evaluate"]').click();
+  setTimeout(async () => {
+    $("evalModel").value = v; $("btnRunEval").click();
+  }, 100);
+}
+window.runEvalForModel = runEvalForModel;
+
+/* ====== 评估 ====== */
+async function refreshEvalSelects() {
+  const [models, datasets] = await Promise.all([
+    fetch(API + "/api/models").then(x=>x.json()),
+    fetch(API + "/api/datasets").then(x=>x.json()),
+  ]);
+  const am = await fetch(API + "/api/models/active").then(x=>x.json());
+  const ms = $("evalModel"); ms.innerHTML = `<option value="">（现役）${am.active?" - "+am.active.version:" 无"}</option>`;
+  models.filter(m=>m.training_status==="completed").forEach(m => {
+    const o = document.createElement("option"); o.value = m.version; o.textContent = m.version + (m.is_active?" ★":""); ms.appendChild(o);
+  });
+  const ds = $("evalDataset"); ds.innerHTML = `<option value="">（使用模型训练时的数据集）</option>`;
+  datasets.forEach(d => { const o = document.createElement("option"); o.value=d.version; o.textContent=`${d.version} · ${d.filename}`; ds.appendChild(o); });
+  await refreshEvalHistory();
+}
+
+$("btnRunEval").onclick = async () => {
+  $("btnRunEval").disabled = true; $("btnRunEval").textContent = "评估中…";
+  const body = {model_version: $("evalModel").value || null, dataset_version: $("evalDataset").value || null, test_ratio: +$("evalRatio").value, random_state: 42};
+  const res = await fetch(API + "/api/evaluations", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body)}).then(x=>x.json());
+  $("btnRunEval").disabled = false; $("btnRunEval").textContent = "运行评估";
+  if (res.success) {
+    toast("评估完成", "success");
+    await refreshEvalHistory();
+    showEvalDetail(res.evaluation_id);
+  } else toast("评估失败：" + res.error, "error");
+};
+$("btnRefreshEval").onclick = refreshEvalHistory;
+
+async function refreshEvalHistory() {
+  const list = await fetch(API + "/api/evaluations").then(x=>x.json());
+  const el = $("evalHistory");
+  if (!list.length) { el.innerHTML = `<div class="text-xs text-slate-500">暂无评估记录</div>`; return; }
+  el.innerHTML = list.map(e => `
+    <div onclick="showEvalDetail(${e.id})" class="border rounded p-2 text-xs cursor-pointer hover:bg-blue-50 transition">
+      <div class="flex justify-between">
+        <span class="font-semibold">评估 #${e.id}</span>
+        <span class="mono ${e.accuracy>=0.85?"text-emerald-700":e.accuracy>=0.65?"text-amber-700":"text-rose-700"}">Acc ${pct(e.accuracy)}</span>
+      </div>
+      <div class="text-slate-500 mt-1">模型 <span class="font-mono">${e.model_version}</span></div>
+      <div class="text-slate-500">数据 <span class="font-mono">${e.dataset_version}</span></div>
+      <div class="text-slate-400 mt-1">${fmtTime(e.created_at)}</div>
+      <div class="mt-1 text-slate-600">F1(macro) ${pct(e.f1_macro)} · Prec ${pct(e.precision_macro)} · Rec ${pct(e.recall_macro)}</div>
+    </div>
+  `).join("");
+}
+
+async function showEvalDetail(id) {
+  const e = await fetch(API + "/api/evaluations/" + id).then(x=>x.json());
+  if (!e) return;
+  const t = e.traceability;
+  const html = [];
+  html.push(`
+    <div class="mb-4 p-3 bg-slate-50 border rounded">
+      <div class="font-semibold mb-2">🔍 版本追溯（避免孤立准确率）</div>
+      <div class="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
+        <div>评估ID: <b>#${t.evaluation_id}</b></div>
+        <div>评估时间: ${fmtTime(t.evaluation_created_at)}</div>
+        <div>模型版本: <span class="mono text-blue-700">${t.model_version}</span></div>
+        <div>训练时间: ${fmtTime(t.model_created_at)}</div>
+        <div>特征数量: ${t.model_feature_count||"-"}</div>
+        <div>训练状态: ${t.model_training_status}</div>
+        <div>数据集版本: <span class="mono text-blue-700">${t.dataset_version}</span></div>
+        <div>数据文件: ${t.dataset_filename}</div>
+        <div>数据行数: ${t.dataset_row_count}（已标 ${t.dataset_labeled_count}）</div>
+        <div>导入时间: ${fmtTime(t.dataset_created_at)}</div>
+        <div class="col-span-2">超参数: <code class="bg-white px-1 border rounded">${JSON.stringify(t.model_hyperparams||{})}</code></div>
+        <div class="col-span-2">
+          数据集标签分布: ` + Object.entries(t.dataset_label_distribution||{}).map(([k,v])=>`<span class="tag-pill bg-blue-100 text-blue-800 ml-1">${k}: ${v}</span>`).join("") + `
+        </div>
+      </div>
+      <div class="mt-2 text-xs">
+        <a class="text-blue-600 hover:underline mr-4" href="${API}/api/evaluations/${id}/report.txt" target="_blank">📄 导出文本报告</a>
+        <a class="text-blue-600 hover:underline" href="${API}/api/evaluations/${id}/report.json" target="_blank">🔗 查看JSON报告</a>
+      </div>
+    </div>
+
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-2 mb-4">
+      <div class="p-3 rounded bg-blue-50 text-center"><div class="text-xs text-blue-700">Accuracy</div><div class="text-xl font-bold text-blue-800">${pct(e.accuracy)}</div></div>
+      <div class="p-3 rounded bg-indigo-50 text-center"><div class="text-xs text-indigo-700">Precision (macro)</div><div class="text-xl font-bold text-indigo-800">${pct(e.precision_macro)}</div></div>
+      <div class="p-3 rounded bg-emerald-50 text-center"><div class="text-xs text-emerald-700">Recall (macro)</div><div class="text-xl font-bold text-emerald-800">${pct(e.recall_macro)}</div></div>
+      <div class="p-3 rounded bg-amber-50 text-center"><div class="text-xs text-amber-700">F1 (macro)</div><div class="text-xl font-bold text-amber-800">${pct(e.f1_macro)}</div></div>
+    </div>
+
+    <div class="mb-4">
+      <h4 class="font-semibold text-sm mb-2">📈 各类别指标</h4>
+      <div class="scroll-x">
+      <table class="data">
+        <thead><tr><th>类别</th><th>Precision</th><th>Recall</th><th>F1</th><th>Support</th></tr></thead>
+        <tbody>
+          ${e.labels.map(lab => { const m = e.per_class_metrics[lab] || {}; return `<tr>
+            <td><b>${lab}</b></td><td>${pct(m.precision||0)}</td><td>${pct(m.recall||0)}</td><td>${pct(m["f1-score"]||0)}</td><td>${m.support||0}</td>
+          </tr>`}).join("")}
+          ${(() => { const avg = e.report_json["macro avg"] || {}; return `<tr class="bg-slate-50"><td><b>Macro Avg</b></td><td>${pct(avg.precision||0)}</td><td>${pct(avg.recall||0)}</td><td>${pct(avg["f1-score"]||0)}</td><td>${avg.support||0}</td></tr>`})()}
+          ${(() => { const avg = e.report_json["weighted avg"] || {}; return `<tr class="bg-slate-50"><td><b>Weighted Avg</b></td><td>${pct(avg.precision||0)}</td><td>${pct(avg.recall||0)}</td><td>${pct(avg["f1-score"]||0)}</td><td>${avg.support||0}</td></tr>`})()}
+        </tbody>
+      </table>
+      </div>
+    </div>
+
+    <div class="mb-4">
+      <h4 class="font-semibold text-sm mb-2">🔢 混淆矩阵（行=真实，列=预测）</h4>
+      <div class="scroll-x">
+      <table class="data">
+        <thead><tr><th>真实 \\ 预测</th>${e.labels.map(l=>`<th>${l}</th>`).join("")}</tr></thead>
+        <tbody>${e.confusion_matrix.map((row,i)=>`<tr><td><b>${e.labels[i]}</b></td>${row.map(v=>`<td class="cm-cell ${v>0?"bg-blue-100 font-bold":"text-slate-300"}">${v}</td>`).join("")}</tr>`).join("")}</tbody>
+      </table>
+      </div>
+    </div>
+
+    <div class="mb-2 text-xs text-slate-500">训练集 ${e.train_samples} 样本 · 测试集 ${e.test_samples} 样本 · 总计 ${e.train_samples + e.test_samples}</div>
+  `);
+  $("evalDetail").innerHTML = html.join("");
+}
+window.showEvalDetail = showEvalDetail;
+
+/* ====== 预测 ====== */
+async function refreshPredictModel() {
+  const models = await fetch(API + "/api/models").then(x=>x.json());
+  const am = await fetch(API + "/api/models/active").then(x=>x.json());
+  const s = $("predModel"); s.innerHTML = `<option value="">（现役）${am.active?" - "+am.active.version:" 无"}</option>`;
+  models.filter(m=>m.training_status==="completed").forEach(m => {
+    const o = document.createElement("option"); o.value = m.version; o.textContent = m.version + (m.is_active?" ★":""); s.appendChild(o);
+  });
+}
+
+async function checkPredictReady() {
+  const am = await fetch(API + "/api/models/active").then(x=>x.json());
+  $("predictWarn").innerHTML = am.active ? "" : `<div class="bg-rose-50 border border-rose-300 text-rose-700 rounded p-3 text-sm">⚠️ 暂无现役模型，请先在「训练/模型」页训练并激活模型。未训练直接预测会返回错误。</div>`;
+}
+
+$("btnPredictOne").onclick = async () => {
+  const text = $("predText").value.trim();
+  if (!text) return toast("请输入条款文本", "error");
+  const body = {clause_text: text, contract_type: $("predCT").value || null, model_version: $("predModel").value || null, top_k: 3};
+  const res = await fetch(API + "/api/predict", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body)}).then(x=>x.json());
+  if (res.success) {
+    const top = res.top_predictions.map(p => `<div class="flex justify-between"><span>${p.label}</span><span class="mono">${pct(p.probability)}</span></div>`).join("");
+    $("predResult").innerHTML = `
+      <div class="bg-emerald-50 border border-emerald-300 rounded p-3">
+        <div class="flex justify-between items-center mb-2"><span class="font-semibold">预测结果：<span class="text-emerald-700 text-lg">${res.predicted_label}</span></span><span class="text-2xl font-bold text-emerald-700">${pct(res.confidence)}</span></div>
+        <div class="text-xs text-slate-500 mb-2">模型: <span class="mono">${res.model_version}</span> · 数据: <span class="mono">${res.dataset_version}</span></div>
+        <div class="space-y-1 border-t pt-2">${top}</div>
+        <div class="mt-3 flex gap-2 flex-wrap">
+          ${res.all_classes.map(c=>`<button onclick="fillCorr('${res.clause_text.replace(/'/g,"\\'")}', '${res.predicted_label}', '${c}')" class="text-xs bg-rose-100 hover:bg-rose-200 text-rose-800 px-2 py-1 rounded">判为 ${c}</button>`).join("")}
+        </div>
+      </div>`;
+  } else toast("预测失败：" + res.error, "error");
+};
+
+function fillCorr(text, pred, corrected) {
+  document.querySelector('[data-tab="corrections"]').click();
+  setTimeout(() => {
+    $("corrText").value = text; $("corrPred").value = pred; $("corrLabel").value = corrected;
+    $("corrReason").value = `人工改判：预测为${pred}，实际应为${corrected}`;
+    toast("已填入改判表单，请确认并补充原因", "success");
+  }, 100);
+}
+window.fillCorr = fillCorr;
+
+$("btnPredictCsv").onclick = async () => {
+  const f = $("predFile").files[0];
+  if (!f) return toast("请选择CSV文件", "error");
+  $("btnPredictCsv").disabled = true; $("btnPredictCsv").textContent = "预测中…";
+  const fd = new FormData(); fd.append("file", f);
+  const mv = $("predModel").value; if (mv) fd.append("model_version", mv);
+  const res = await fetch(API + "/api/predict/csv", {method:"POST", body:fd}).then(x=>x.json());
+  $("btnPredictCsv").disabled = false; $("btnPredictCsv").textContent = "批量预测";
+  if (res.success) {
+    const rows = res.predictions;
+    $("predCsvResult").innerHTML = `
+      <div class="bg-indigo-50 border border-indigo-300 rounded p-3 mb-3">
+        <div>共预测 <b>${rows.length}</b> 条 · 模型 <span class="mono">${res.model_version}</span> · 数据 <span class="mono">${res.dataset_version}</span></div>
+      </div>
+      <div class="scroll-x max-h-96 overflow-y-auto">
+        <table class="data">
+          <thead><tr><th>#</th><th>条款</th><th>预测</th><th>置信</th>${rows[0]?.true_label ? `<th>真实标签</th>`:""}<th>操作</th></tr></thead>
+          <tbody>${rows.map((r,i)=>`
+            <tr>
+              <td class="mono">${r.row_index+1}</td>
+              <td>${r.clause_text.slice(0,80)}${r.clause_text.length>80?"…":""}</td>
+              <td><b>${r.predicted_label}</b></td>
+              <td class="mono">${pct(r.confidence)}</td>
+              ${r.true_label ? `<td>${r.true_label}${r.true_label===r.predicted_label?' ✅':' ❌'}</td>`:""}
+              <td><button onclick='fillCorr(${JSON.stringify(r.clause_text)}, "${r.predicted_label}", prompt("改判标签（付款/违约/自动续约）") || "${r.predicted_label}")' class="text-xs bg-rose-100 hover:bg-rose-200 px-2 py-0.5 rounded">改判</button></td>
+            </tr>
+          `).join("")}</tbody>
+        </table>
+      </div>`;
+  } else toast("批量预测失败：" + res.error, "error");
+};
+
+/* ====== 人工改判 ====== */
+async function refreshCorrModel() {
+  const models = await fetch(API + "/api/models").then(x=>x.json());
+  const am = await fetch(API + "/api/models/active").then(x=>x.json());
+  const s = $("corrModel"); s.innerHTML = "";
+  if (am.active) { const o = document.createElement("option"); o.value = am.active.version; o.textContent = "现役 " + am.active.version + " ★"; s.appendChild(o); }
+  models.filter(m=>m.training_status==="completed" && (!am.active || m.version!==am.active.version)).forEach(m => {
+    const o = document.createElement("option"); o.value = m.version; o.textContent = m.version; s.appendChild(o);
+  });
+}
+
+async function checkCorrReady() {
+  const am = await fetch(API + "/api/models/active").then(x=>x.json());
+  $("correctionWarn").innerHTML = am.active ? "" : `<div class="bg-rose-50 border border-rose-300 text-rose-700 rounded p-3 text-sm">⚠️ 暂无现役模型，无法记录改判归属；请在「训练/模型」页激活模型。</div>`;
+}
+
+$("btnSaveCorr").onclick = async () => {
+  const body = {
+    clause_text: $("corrText").value.trim(),
+    predicted_label: $("corrPred").value,
+    corrected_label: $("corrLabel").value,
+    reason: $("corrReason").value.trim(),
+    model_version: $("corrModel").value || null,
+  };
+  if (!body.clause_text) return toast("条款文本必填", "error");
+  if (!body.reason) return toast("改判原因必填", "error");
+  if (body.predicted_label === body.corrected_label) if (!confirm("预测与改判标签相同，仍保存？")) return;
+  const res = await fetch(API + "/api/corrections", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body)}).then(x=>x.json());
+  if (res.success) { toast("改判已记录（ID=" + res.correction_id + "）", "success"); refreshCorrList(); }
+  else toast("保存失败：" + res.error, "error");
+};
+$("btnRefreshCorr").onclick = refreshCorrList;
+
+async function refreshCorrList() {
+  const onlyActive = $("corrFilterActive").checked;
+  const am = onlyActive ? await fetch(API + "/api/models/active").then(x=>x.json()) : null;
+  const list = await fetch(API + "/api/corrections" + (onlyActive && am.active ? "?model_version=" + am.active.version : "")).then(x=>x.json());
+  const el = $("corrList");
+  if (!list.length) { el.innerHTML = `<div class="text-sm text-slate-500">暂无改判记录</div>`; return; }
+  el.innerHTML = list.map(c => `
+    <div class="border rounded p-3 text-sm">
+      <div class="flex justify-between items-start gap-2">
+        <div class="text-xs text-slate-500">#${c.id} · 模型 <span class="mono">${c.model_version}</span> · ${fmtTime(c.created_at)}</div>
+        <div class="flex items-center gap-1">
+          <span class="tag-pill bg-slate-200 text-slate-700">预测:${c.predicted_label}</span>
+          <span>→</span>
+          <span class="tag-pill bg-rose-200 text-rose-800 font-semibold">改判:${c.corrected_label}</span>
+        </div>
+      </div>
+      <div class="mt-2 text-slate-700 text-xs bg-slate-50 p-2 rounded">${c.clause_text}</div>
+      <div class="mt-2 text-xs text-slate-600"><b>原因：</b>${c.reason}</div>
+    </div>
+  `).join("");
+}
+
+/* ====== 版本 / 回滚 ====== */
+async function refreshRollbackList() {
+  const list = await fetch(API + "/api/models").then(x=>x.json());
+  const el = $("rollbackModelList");
+  if (!list.length) { el.innerHTML = `<div class="text-sm text-slate-500">暂无模型</div>`; return; }
+  el.innerHTML = list.map(m => `
+    <div class="border rounded p-3 text-sm ${m.is_active?"border-amber-400 bg-amber-50":""}">
+      <div class="flex justify-between items-center flex-wrap gap-2">
+        <div>
+          <div class="flex items-center gap-2">
+            <span class="font-mono text-xs">${m.version}</span>
+            ${m.is_active ? `<span class="tag-pill bg-amber-400 text-amber-900 font-bold">★ 现役</span>`:""}
+            ${statusBadge(m.training_status)}
+          </div>
+          <div class="text-xs text-slate-500 mt-1">数据 ${m.dataset_version} · ${fmtTime(m.created_at)}</div>
+          <div class="text-xs text-slate-500">特征: ${m.feature_count||"-"} · 测试集 C=${m.hyperparams?.classifier?.C || "-"}</div>
+        </div>
+        ${m.training_status==="completed" && !m.is_active ? `<button onclick="activateModel('${m.version}')" class="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1 rounded text-xs">激活 / 回滚到此版本</button>` : ""}
+        ${m.is_active ? `<span class="text-xs text-amber-700 font-semibold">当前在役</span>` : ""}
+      </div>
+    </div>
+  `).join("");
+}
+
+async function refreshRollbackLogs() {
+  const list = await fetch(API + "/api/rollback-logs").then(x=>x.json());
+  const el = $("rollbackLogList");
+  if (!list.length) { el.innerHTML = `<div class="text-sm text-slate-500">暂无激活/回滚记录</div>`; return; }
+  el.innerHTML = list.map(l => `
+    <div class="border rounded p-3 text-sm">
+      <div class="flex justify-between">
+        <span class="font-semibold">${l.operation_type === "activate" ? "激活 / 回滚" : l.operation_type}</span>
+        <span class="text-xs text-slate-500">${fmtTime(l.created_at)}</span>
+      </div>
+      <div class="text-xs mt-1"><span class="text-slate-400">原现役:</span> ${l.previous_active_version || "<span class='text-slate-400'>无</span>"} <b>→</b> <span class="text-blue-700 mono font-semibold">${l.new_active_version || "-"}</span></div>
+      ${l.operator_note ? `<div class="text-xs text-slate-600 mt-1">📝 ${l.operator_note}</div>`:""}
+    </div>
+  `).join("");
+}
+
+/* ====== 启动初始化 ====== */
+(async function init(){
+  await loadTopStatus();
+  await refreshDatasets();
+  await refreshTrainSelects();
+  await refreshModels();
+})();
+</script>
+</body>
+</html>
