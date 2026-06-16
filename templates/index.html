@@ -807,38 +807,6 @@ function fillCorr(text, pred, corrected) {
 }
 window.fillCorr = fillCorr;
 
-$("btnPredictCsv").onclick = async () => {
-  const f = $("predFile").files[0];
-  if (!f) return toast("请选择CSV文件", "error");
-  $("btnPredictCsv").disabled = true; $("btnPredictCsv").textContent = "预测中…";
-  const fd = new FormData(); fd.append("file", f);
-  const mv = $("predModel").value; if (mv) fd.append("model_version", mv);
-  const res = await fetch(API + "/api/predict/csv", {method:"POST", body:fd}).then(x=>x.json());
-  $("btnPredictCsv").disabled = false; $("btnPredictCsv").textContent = "批量预测";
-  if (res.success) {
-    const rows = res.predictions;
-    $("predCsvResult").innerHTML = `
-      <div class="bg-indigo-50 border border-indigo-300 rounded p-3 mb-3">
-        <div>共预测 <b>${rows.length}</b> 条 · 模型 <span class="mono">${res.model_version}</span> · 数据 <span class="mono">${res.dataset_version}</span></div>
-      </div>
-      <div class="scroll-x max-h-96 overflow-y-auto">
-        <table class="data">
-          <thead><tr><th>#</th><th>条款</th><th>预测</th><th>置信</th>${rows[0]?.true_label ? `<th>真实标签</th>`:""}<th>操作</th></tr></thead>
-          <tbody>${rows.map((r,i)=>`
-            <tr>
-              <td class="mono">${r.row_index+1}</td>
-              <td>${r.clause_text.slice(0,80)}${r.clause_text.length>80?"…":""}</td>
-              <td><b>${r.predicted_label}</b></td>
-              <td class="mono">${pct(r.confidence)}</td>
-              ${r.true_label ? `<td>${r.true_label}${r.true_label===r.predicted_label?' ✅':' ❌'}</td>`:""}
-              <td><button onclick='fillCorr(${JSON.stringify(r.clause_text)}, "${r.predicted_label}", prompt("改判标签（付款/违约/自动续约）") || "${r.predicted_label}")' class="text-xs bg-rose-100 hover:bg-rose-200 px-2 py-0.5 rounded">改判</button></td>
-            </tr>
-          `).join("")}</tbody>
-        </table>
-      </div>`;
-  } else toast("批量预测失败：" + res.error, "error");
-};
-
 /* ====== 人工改判 ====== */
 async function refreshCorrModel() {
   const models = await fetch(API + "/api/models").then(x=>x.json());

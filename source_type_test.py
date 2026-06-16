@@ -1,11 +1,12 @@
 """
 批量预测 - 导入来源(source_type)筛选 专项回归测试
 覆盖：
-  [1] 前端 DOM：fSourceType 控件、刷新/重置/应用按钮存在
+  [1] 前端模板结构：fSourceType 等筛选控件在模板中存在（静态检查，非运行时）
   [2] API：source_type 查询能影响返回集合
   [3] 不回归：原有 6 项筛选项（模型/数据集/时间/冲突/改判）仍可用
   [4] 新建批次：source_type 参数能写入数据库并被查询命中
-  [5] 重启可用：重启后 source_type API + 筛选链路仍然有效
+  [5] 持久化验证：source_type 数据持久化到数据库（服务重启后数据不丢失）
+  [6] 浏览器端到端验证：Tab 切换 / 筛选交互 / 结果变化（需手动执行 integrated_browser 验证）
 
 运行方式：python source_type_test.py
 需要服务正在 http://127.0.0.1:8001 运行
@@ -136,19 +137,21 @@ if not mdl_version:
     sys.exit(1)
 
 # -----------------------------------------------------------------------------
-print("\n[1] 前端 DOM：fSourceType 控件、刷新/重置/应用按钮存在")
+print("\n[1] 前端模板结构：fSourceType 等筛选控件在模板中存在（静态检查）")
+print("  说明：本节仅验证模板文件中是否存在对应 DOM 节点，")
+print("        不代表 JS 能正常运行。真正的前端功能验证见 [6] 浏览器端到端验证。")
 with open(INDEX_HTML, "r", encoding="utf-8") as f:
     html = f.read()
-check('id="fSourceType" 下拉存在', 'id="fSourceType"' in html)
-check('id="btnApplyFilter" 应用筛选按钮存在', 'id="btnApplyFilter"' in html)
-check('id="btnResetFilter" 重置按钮存在', 'id="btnResetFilter"' in html)
-check('id="btnRefreshBatches" 刷新按钮存在', 'id="btnRefreshBatches"' in html)
-check('id="fModelVersion" 模型版本筛选存在', 'id="fModelVersion"' in html)
-check('id="fDatasetVersion" 数据集版本筛选存在', 'id="fDatasetVersion"' in html)
-check('id="fHasConflicts" 冲突筛选存在', 'id="fHasConflicts"' in html)
-check('id="fHasCorrections" 改判筛选存在', 'id="fHasCorrections"' in html)
-check('id="fCreatedFrom" 开始时间筛选存在', 'id="fCreatedFrom"' in html)
-check('id="fCreatedTo" 结束时间筛选存在', 'id="fCreatedTo"' in html)
+check('id="fSourceType" 下拉在模板中存在', 'id="fSourceType"' in html)
+check('id="btnApplyFilter" 应用筛选按钮在模板中存在', 'id="btnApplyFilter"' in html)
+check('id="btnResetFilter" 重置按钮在模板中存在', 'id="btnResetFilter"' in html)
+check('id="btnRefreshBatches" 刷新按钮在模板中存在', 'id="btnRefreshBatches"' in html)
+check('id="fModelVersion" 模型版本筛选在模板中存在', 'id="fModelVersion"' in html)
+check('id="fDatasetVersion" 数据集版本筛选在模板中存在', 'id="fDatasetVersion"' in html)
+check('id="fHasConflicts" 冲突筛选在模板中存在', 'id="fHasConflicts"' in html)
+check('id="fHasCorrections" 改判筛选在模板中存在', 'id="fHasCorrections"' in html)
+check('id="fCreatedFrom" 开始时间筛选在模板中存在', 'id="fCreatedFrom"' in html)
+check('id="fCreatedTo" 结束时间筛选在模板中存在', 'id="fCreatedTo"' in html)
 check("筛选面板 grid-cols 支持 7 个筛选项自然换行", "lg:grid-cols-4" in html or "lg:grid-cols-7" in html)
 
 # -----------------------------------------------------------------------------
@@ -291,25 +294,15 @@ check("批次 C detail 中 source_type=review_batch", det_c.get("source_type") =
       f"实际={det_c.get('source_type')}")
 
 # -----------------------------------------------------------------------------
-print("\n[5] 重启可用：重启后 source_type API + 筛选链路仍然有效")
-# 5a 记录重启前各 API 的数据
-before_st = api("GET", "/api/batches/source_types")[1]
-before_list_a = api("GET", "/api/batches?source_type=manual_upload&limit=200")[1]
-before_list_b_len = len(api("GET", "/api/batches?source_type=system_import&limit=200")[1])
-before_list_c_len = len(api("GET", "/api/batches?source_type=review_batch&limit=200")[1])
+print("\n[5] 持久化验证：source_type 数据持久化到数据库，服务重启后不丢失")
+print("  说明：本节验证数据已写入 SQLite 数据库（持久化存储），")
+print("        服务重启后数据仍然存在。完整的'重启后功能验证'见 [6]。")
 
-# 5b 不实际重启服务（由 CI/用户验证），这里给出操作提示并验证当前状态
-print("  [INFO] 重启服务验证步骤：")
-print("         1. 停止当前 uvicorn 进程（仅该 PID）")
-print("         2. 运行：python -m uvicorn app:app --host 127.0.0.1 --port 8001")
-print("         3. 再次运行本测试脚本，[1]-[4] 应全部通过")
-
-# 5c 直接查数据库证明持久化
+# 5a 直接查数据库证明持久化
 from src.models import get_connection
 conn = get_connection()
 try:
     cur = conn.cursor()
-    # 三个 source_type 都存在于数据库
     rows = cur.execute(
         "SELECT batch_id, source_type FROM batch_predictions WHERE batch_id IN (?,?,?) ORDER BY batch_id",
         (batch_a_id, batch_b_id, batch_c_id),
@@ -318,14 +311,13 @@ try:
     check("数据库中 batch_a 保存 manual_upload", db_map.get(batch_a_id) == "manual_upload")
     check("数据库中 batch_b 保存 system_import", db_map.get(batch_b_id) == "system_import")
     check("数据库中 batch_c 保存 review_batch", db_map.get(batch_c_id) == "review_batch")
-    # 三个批次都不是 NULL
     check("三个批次 source_type 都不是 NULL/空",
           all(v is not None and v != "" for v in db_map.values()),
       f"db_map={db_map}")
 finally:
     conn.close()
 
-# 5d 空表单字段回退（不传 source_type 时 default=manual_upload）
+# 5b 空表单字段回退（不传 source_type 时 default=manual_upload）
 batch_d_csv = os.path.join(BASE, "data", "datasets", "_st_default.csv")
 write_csv(batch_d_csv, csv_lines)
 with open(batch_d_csv, "rb") as f:
@@ -344,6 +336,19 @@ if batch_d_id:
           f"实际={det_d.get('source_type')}")
 if os.path.exists(batch_d_csv):
     os.remove(batch_d_csv)
+
+# -----------------------------------------------------------------------------
+print("\n[6] 浏览器端到端验证：Tab 切换 / 筛选交互 / 结果变化")
+print("  说明：本节不自动执行，需手动用浏览器或 integrated_browser MCP 验证。")
+print("  验证步骤：")
+print("    1. 打开 http://127.0.0.1:8001/ ，按 F12 打开 Console，确认无 JS error")
+print("    2. 点击顶部「🔮 预测」Tab，能看到「单条预测 / 批量预测 & 批次历史」两个子 Tab")
+print("    3. 点击「批量预测 & 批次历史」子 Tab，能看到筛选面板（7个筛选项）")
+print("    4. 导入来源下拉有值：全部 / manual_upload / review_batch / system_import")
+print("    5. 选择 system_import 后点「应用筛选」，批次列表数量减少（筛选生效）")
+print("    6. 点「重置」，下拉回到「全部」，列表数量恢复")
+print("    7. 重启服务后重复步骤 1-6，全部仍可正常使用")
+print("  预期：全部步骤通过，Console 无 JS error，筛选前后列表数量变化正确")
 
 # -----------------------------------------------------------------------------
 print("\n" + "=" * 70)
