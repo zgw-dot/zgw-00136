@@ -11,6 +11,9 @@ from .version_manager import (
     get_model_version,
     get_active_model_version,
     add_operation_log,
+    list_correction_history,
+    list_operation_logs,
+    check_permission,
 )
 from .predictor import load_model_bundle, PredictionError
 from .trainer import _build_features_from_dataframe
@@ -156,55 +159,56 @@ def create_batch_prediction(
             items[orig_idx]["top_predictions"] = top_results
 
     conn = get_connection()
-    cur = conn.cursor()
-
-    cur.execute(
-        """
-        INSERT INTO batch_predictions
-        (batch_id, filename, model_version, dataset_version,
-         total_rows, predicted_count, conflict_count, status, note, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            batch_id,
-            filename,
-            model_version,
-            dataset_version,
-            total_rows,
-            total_rows - conflict_count,
-            conflict_count,
-            "completed",
-            note,
-            now_iso(),
-        ),
-    )
-
-    for item in items:
+    try:
+        cur = conn.cursor()
         cur.execute(
             """
-            INSERT INTO batch_items
-            (batch_id, row_index, clause_text, contract_type,
-             predicted_label, confidence, top_predictions,
-             is_conflict, conflict_reason, true_label, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO batch_predictions
+            (batch_id, filename, model_version, dataset_version,
+             total_rows, predicted_count, conflict_count, status, note, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 batch_id,
-                item["row_index"],
-                item["clause_text"],
-                item["contract_type"],
-                item["predicted_label"],
-                item["confidence"],
-                json.dumps(item["top_predictions"], ensure_ascii=False),
-                1 if item["is_conflict"] else 0,
-                item["conflict_reason"],
-                item["true_label"],
+                filename,
+                model_version,
+                dataset_version,
+                total_rows,
+                total_rows - conflict_count,
+                conflict_count,
+                "completed",
+                note,
                 now_iso(),
             ),
         )
 
-    conn.commit()
-    conn.close()
+        for item in items:
+            cur.execute(
+                """
+                INSERT INTO batch_items
+                (batch_id, row_index, clause_text, contract_type,
+                 predicted_label, confidence, top_predictions,
+                 is_conflict, conflict_reason, true_label, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    batch_id,
+                    item["row_index"],
+                    item["clause_text"],
+                    item["contract_type"],
+                    item["predicted_label"],
+                    item["confidence"],
+                    json.dumps(item["top_predictions"], ensure_ascii=False),
+                    1 if item["is_conflict"] else 0,
+                    item["conflict_reason"],
+                    item["true_label"],
+                    now_iso(),
+                ),
+            )
+
+        conn.commit()
+    finally:
+        conn.close()
 
     add_operation_log(
         operation_type="batch_predict_create",
@@ -242,8 +246,18 @@ def _build_text_feature(clause_text: str, contract_type: Optional[str]) -> str:
 
 def list_batches(
     model_version: Optional[str] = None,
+    dataset_version: Optional[str] = None,
+    created_from: Optional[str] = None,
+    created_to: Optional[str] = None,
+    source_type: Optional[str] = None,
+    has_conflicts: Optional[str] = None,
+    has_corrections: Optional[str] = None,
     limit: int = 50,
+    role: Optional[str] = "admin",
 ) -> List[Dict[str, Any]]:
+    if role and not check_permission(role, "batch_view"):
+        raise BatchError(f"角色 '{role}' 没有查看批次的权限")
+
     conn = get_connection()
     cur = conn.cursor()
     query = "SELECT * FROM batch_predictions WHERE 1=1"
@@ -251,12 +265,101 @@ def list_batches(
     if model_version:
         query += " AND model_version = ?"
         params.append(model_version)
+    if dataset_version:
+        query += " AND dataset_version = ?"
+        params.append(dataset_version)
+    if created_from:
+        query += " AND created_at >= ?"
+        params.append(created_from)
+    if created_to:
+        query += " AND created_at <= ?"
+        params.append(created_to)
+    if source_type:
+        query += " AND source_type = ?"
+        params.append(source_type)
+    if has_conflicts == "yes":
+        query += " AND conflict_count > 0"
+    elif has_conflicts == "no":
+        query += " AND conflict_count = 0"
+    if has_corrections == "yes":
+        query += " AND corrected_count > 0"
+    elif has_corrections == "no":
+        query += " AND corrected_count = 0"
     query += " ORDER BY created_at DESC LIMIT ?"
     params.append(limit)
     cur.execute(query, params)
     rows = [dict_factory(r) for r in cur.fetchall()]
     conn.close()
     return rows
+
+
+def get_batch_detail(batch_id: str, role: Optional[str] = "admin") -> Optional[Dict[str, Any]]:
+    if role and not check_permission(role, "batch_view"):
+        raise BatchError(f"角色 '{role}' 没有查看批次的权限")
+
+    batch = get_batch(batch_id)
+    if batch is None:
+        return None
+
+    counts = get_batch_item_count(batch_id)
+    exports = list_exports(batch_id=batch_id, limit=100)
+    correction_hist = list_correction_history(batch_id=batch_id, limit=100)
+    batch_logs = list_operation_logs(entity_type="batch", entity_id=batch_id, limit=100)
+    all_corr_logs = list_operation_logs(entity_type="correction", limit=500)
+    corr_logs_for_batch = [
+        l for l in all_corr_logs
+        if (l.get("details") or {}).get("batch_id") == batch_id
+    ]
+    op_logs = sorted(
+        batch_logs + corr_logs_for_batch,
+        key=lambda x: x.get("created_at", ""),
+        reverse=True,
+    )[:100]
+
+    conflict_items = get_batch_items(batch_id, include_conflicts=True, limit=1000)
+    conflict_list = [
+        {
+            "id": c["id"],
+            "row_index": c["row_index"],
+            "clause_text": c["clause_text"],
+            "conflict_reason": c.get("conflict_reason"),
+        }
+        for c in conflict_items
+        if c.get("is_conflict")
+    ]
+
+    corrected_items = [
+        {
+            "id": c["id"],
+            "row_index": c["row_index"],
+            "clause_text": c["clause_text"],
+            "predicted_label": c["predicted_label"],
+            "corrected_label": c.get("corrected_label"),
+            "correction_reason": c.get("correction_reason"),
+            "corrected_by": c.get("corrected_by"),
+            "corrected_at": c.get("corrected_at"),
+            "previous_label": c.get("previous_label"),
+        }
+        for c in conflict_items
+        if c.get("corrected_label")
+    ]
+
+    model_info = get_model_version(batch["model_version"]) if batch.get("model_version") else None
+
+    return {
+        **batch,
+        "item_counts": counts,
+        "exports": exports,
+        "correction_history": correction_hist,
+        "operation_logs": op_logs,
+        "conflict_items": conflict_list,
+        "corrected_items_summary": corrected_items,
+        "model_info": {
+            "version": model_info["version"] if model_info else None,
+            "note": model_info.get("note") if model_info else None,
+            "created_at": model_info.get("created_at") if model_info else None,
+        },
+    }
 
 
 def get_batch(batch_id: str) -> Optional[Dict[str, Any]]:
@@ -333,6 +436,11 @@ def update_batch_item_correction(
     corrected_label: str,
     correction_reason: str,
     correction_id: Optional[int] = None,
+    previous_label: Optional[str] = None,
+    previous_reason: Optional[str] = None,
+    previous_operator: Optional[str] = None,
+    previous_corrected_at: Optional[str] = None,
+    corrected_by: Optional[str] = None,
 ) -> bool:
     conn = get_connection()
     cur = conn.cursor()
@@ -340,7 +448,10 @@ def update_batch_item_correction(
         """
         UPDATE batch_items
         SET corrected_label = ?, correction_reason = ?,
-            correction_id = ?, corrected_at = ?
+            correction_id = ?, corrected_at = ?,
+            previous_label = ?, previous_reason = ?,
+            previous_operator = ?, previous_corrected_at = ?,
+            corrected_by = ?
         WHERE id = ? AND batch_id = ?
         """,
         (
@@ -348,14 +459,114 @@ def update_batch_item_correction(
             correction_reason,
             correction_id,
             now_iso(),
+            previous_label,
+            previous_reason,
+            previous_operator,
+            previous_corrected_at,
+            corrected_by,
             item_id,
             batch_id,
         ),
     )
     updated = cur.rowcount > 0
+    if updated:
+        cur.execute(
+            """
+            UPDATE batch_predictions
+            SET corrected_count = (
+                SELECT COUNT(*) FROM batch_items
+                WHERE batch_id = ? AND corrected_label IS NOT NULL
+            )
+            WHERE batch_id = ?
+            """,
+            (batch_id, batch_id),
+        )
     conn.commit()
     conn.close()
     return updated
+
+
+def revert_batch_item_correction(
+    batch_id: str,
+    item_id: int,
+    reverted_label: str,
+    reverted_reason: str,
+) -> bool:
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT previous_label, previous_reason, previous_operator, previous_corrected_at "
+        "FROM batch_items WHERE id = ? AND batch_id = ?",
+        (item_id, batch_id),
+    )
+    row = cur.fetchone()
+    if row is None:
+        conn.close()
+        return False
+
+    prev_label = row["previous_label"]
+    prev_reason = row["previous_reason"]
+    prev_op = row["previous_operator"]
+    prev_at = row["previous_corrected_at"]
+
+    if prev_label:
+        cur.execute(
+            """
+            UPDATE batch_items
+            SET corrected_label = ?, correction_reason = ?,
+                corrected_by = ?, corrected_at = ?,
+                previous_label = NULL, previous_reason = NULL,
+                previous_operator = NULL, previous_corrected_at = NULL
+            WHERE id = ? AND batch_id = ?
+            """,
+            (prev_label, prev_reason, prev_op, prev_at, item_id, batch_id),
+        )
+    else:
+        cur.execute(
+            """
+            UPDATE batch_items
+            SET corrected_label = NULL, correction_reason = NULL,
+                correction_id = NULL, corrected_at = NULL, corrected_by = NULL,
+                previous_label = NULL, previous_reason = NULL,
+                previous_operator = NULL, previous_corrected_at = NULL
+            WHERE id = ? AND batch_id = ?
+            """,
+            (item_id, batch_id),
+        )
+
+    updated = cur.rowcount > 0
+    if updated:
+        cur.execute(
+            """
+            UPDATE batch_predictions
+            SET corrected_count = (
+                SELECT COUNT(*) FROM batch_items
+                WHERE batch_id = ? AND corrected_label IS NOT NULL
+            )
+            WHERE batch_id = ?
+            """,
+            (batch_id, batch_id),
+        )
+    conn.commit()
+    conn.close()
+    return updated
+
+
+def get_batch_item(batch_id: str, item_id: int) -> Optional[Dict[str, Any]]:
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT * FROM batch_items WHERE batch_id = ? AND id = ?",
+        (batch_id, item_id),
+    )
+    row = cur.fetchone()
+    conn.close()
+    if row is None:
+        return None
+    r = dict_factory(row)
+    r["top_predictions"] = parse_json_field(r["top_predictions"])
+    r["is_conflict"] = bool(r["is_conflict"])
+    return r
 
 
 def export_batch_to_csv(

@@ -10,6 +10,10 @@ from .version_manager import (
     get_active_model_version,
     add_correction,
     add_operation_log,
+    add_correction_history,
+    get_correction,
+    mark_correction_reverted,
+    check_permission,
 )
 from .trainer import _build_features_from_dataframe
 
@@ -221,6 +225,8 @@ def record_correction(
     model_version: Optional[str] = None,
     batch_id: Optional[str] = None,
     batch_item_id: Optional[int] = None,
+    operator: Optional[str] = None,
+    role: Optional[str] = "admin",
 ) -> Dict[str, Any]:
     if not clause_text or not str(clause_text).strip():
         raise PredictionError("条款文本不能为空")
@@ -228,6 +234,9 @@ def record_correction(
         raise PredictionError("人工改判标签不能为空")
     if not reason or not str(reason).strip():
         raise PredictionError("必须填写改判原因")
+
+    if role and not check_permission(role, "correction_create"):
+        raise PredictionError(f"角色 '{role}' 没有创建改判的权限")
 
     if model_version is None:
         active = get_active_model_version()
@@ -239,6 +248,22 @@ def record_correction(
     if mv is None:
         raise PredictionError(f"模型版本不存在: {model_version}")
 
+    previous_label = None
+    previous_reason = None
+    previous_operator = None
+    previous_corrected_at = None
+    existing_correction_id = None
+
+    if batch_id and batch_item_id is not None:
+        from .batch_manager import get_batch_item
+        existing_item = get_batch_item(batch_id, batch_item_id)
+        if existing_item and existing_item.get("corrected_label"):
+            previous_label = existing_item.get("corrected_label")
+            previous_reason = existing_item.get("correction_reason")
+            previous_operator = existing_item.get("corrected_by")
+            previous_corrected_at = existing_item.get("corrected_at")
+            existing_correction_id = existing_item.get("correction_id")
+
     correction_id = add_correction(
         model_version=model_version,
         clause_text=str(clause_text).strip(),
@@ -246,6 +271,8 @@ def record_correction(
         corrected_label=str(corrected_label).strip(),
         reason=str(reason).strip(),
     )
+
+    conn = get_connection() if False else None
 
     if batch_id and batch_item_id is not None:
         from .batch_manager import update_batch_item_correction
@@ -255,7 +282,28 @@ def record_correction(
             corrected_label=str(corrected_label).strip(),
             correction_reason=str(reason).strip(),
             correction_id=correction_id,
+            previous_label=previous_label,
+            previous_reason=previous_reason,
+            previous_operator=previous_operator,
+            previous_corrected_at=previous_corrected_at,
+            corrected_by=operator,
         )
+
+    add_correction_history(
+        correction_id=correction_id,
+        batch_id=batch_id,
+        batch_item_id=batch_item_id,
+        model_version=model_version,
+        clause_text=str(clause_text).strip(),
+        previous_label=previous_label,
+        previous_reason=previous_reason,
+        previous_operator=previous_operator,
+        previous_corrected_at=previous_corrected_at,
+        new_label=str(corrected_label).strip(),
+        new_reason=str(reason).strip(),
+        new_operator=operator,
+        operation_type="create",
+    )
 
     add_operation_log(
         operation_type="correction_create",
@@ -265,8 +313,10 @@ def record_correction(
             "model_version": model_version,
             "predicted_label": predicted_label,
             "corrected_label": corrected_label,
+            "previous_label": previous_label,
             "batch_id": batch_id,
             "batch_item_id": batch_item_id,
+            "operator": operator,
             "clause_preview": str(clause_text).strip()[:50],
         },
     )
@@ -278,6 +328,93 @@ def record_correction(
         "predicted_label": predicted_label,
         "corrected_label": corrected_label,
         "reason": reason,
+        "previous_label": previous_label,
+        "previous_reason": previous_reason,
         "batch_id": batch_id,
         "batch_item_id": batch_item_id,
+        "operator": operator,
+    }
+
+
+def revert_correction(
+    correction_id: int,
+    batch_id: Optional[str] = None,
+    batch_item_id: Optional[int] = None,
+    operator: Optional[str] = None,
+    role: Optional[str] = "admin",
+) -> Dict[str, Any]:
+    if role and not check_permission(role, "correction_revert"):
+        raise PredictionError(f"角色 '{role}' 没有撤回改判的权限")
+
+    corr = get_correction(correction_id)
+    if corr is None:
+        raise PredictionError(f"改判记录不存在: {correction_id}")
+    if corr.get("is_reverted"):
+        raise PredictionError(f"该改判已被撤回: {correction_id}")
+
+    reverted_label = corr["corrected_label"]
+    reverted_reason = corr["reason"]
+
+    mark_correction_reverted(correction_id, operator=operator)
+
+    previous_label = None
+    previous_reason = None
+    previous_operator = None
+    previous_corrected_at = None
+
+    if batch_id and batch_item_id is not None:
+        from .batch_manager import get_batch_item, revert_batch_item_correction
+        item = get_batch_item(batch_id, batch_item_id)
+        if item:
+            previous_label = item.get("previous_label")
+            previous_reason = item.get("previous_reason")
+            previous_operator = item.get("previous_operator")
+            previous_corrected_at = item.get("previous_corrected_at")
+        revert_batch_item_correction(
+            batch_id=batch_id,
+            item_id=batch_item_id,
+            reverted_label=reverted_label,
+            reverted_reason=reverted_reason,
+        )
+
+    add_correction_history(
+        correction_id=correction_id,
+        batch_id=batch_id,
+        batch_item_id=batch_item_id,
+        model_version=corr["model_version"],
+        clause_text=corr["clause_text"],
+        previous_label=reverted_label,
+        previous_reason=reverted_reason,
+        previous_operator=corr.get("operator"),
+        previous_corrected_at=corr.get("created_at"),
+        new_label=previous_label or corr["predicted_label"],
+        new_reason=previous_reason or f"撤回改判，恢复为预测标签: {corr['predicted_label']}",
+        new_operator=operator,
+        operation_type="revert",
+    )
+
+    add_operation_log(
+        operation_type="correction_revert",
+        entity_type="correction",
+        entity_id=str(correction_id),
+        details={
+            "model_version": corr["model_version"],
+            "reverted_label": reverted_label,
+            "reverted_reason": reverted_reason,
+            "restored_label": previous_label or corr["predicted_label"],
+            "batch_id": batch_id,
+            "batch_item_id": batch_item_id,
+            "operator": operator,
+            "clause_preview": corr["clause_text"][:50],
+        },
+    )
+
+    return {
+        "correction_id": correction_id,
+        "reverted": True,
+        "reverted_label": reverted_label,
+        "restored_label": previous_label or corr["predicted_label"],
+        "batch_id": batch_id,
+        "batch_item_id": batch_item_id,
+        "operator": operator,
     }

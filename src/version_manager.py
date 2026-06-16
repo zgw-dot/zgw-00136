@@ -463,3 +463,129 @@ def list_operation_logs(
     for r in rows:
         r["details"] = parse_json_field(r["details"])
     return rows
+
+
+def add_correction_history(
+    correction_id: int,
+    batch_id: Optional[str],
+    batch_item_id: Optional[int],
+    model_version: str,
+    clause_text: str,
+    previous_label: Optional[str],
+    previous_reason: Optional[str],
+    previous_operator: Optional[str],
+    previous_corrected_at: Optional[str],
+    new_label: str,
+    new_reason: str,
+    new_operator: Optional[str],
+    operation_type: str,
+) -> int:
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO correction_history
+        (correction_id, batch_id, batch_item_id, model_version, clause_text,
+         previous_label, previous_reason, previous_operator, previous_corrected_at,
+         new_label, new_reason, new_operator, operation_type, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            correction_id,
+            batch_id,
+            batch_item_id,
+            model_version,
+            clause_text,
+            previous_label,
+            previous_reason,
+            previous_operator,
+            previous_corrected_at,
+            new_label,
+            new_reason,
+            new_operator,
+            operation_type,
+            now_iso(),
+        ),
+    )
+    new_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+    return new_id
+
+
+def list_correction_history(
+    correction_id: Optional[int] = None,
+    batch_id: Optional[str] = None,
+    limit: int = 100,
+) -> List[Dict[str, Any]]:
+    conn = get_connection()
+    cur = conn.cursor()
+    query = "SELECT * FROM correction_history WHERE 1=1"
+    params: List[Any] = []
+    if correction_id is not None:
+        query += " AND correction_id = ?"
+        params.append(correction_id)
+    if batch_id:
+        query += " AND batch_id = ?"
+        params.append(batch_id)
+    query += " ORDER BY created_at DESC LIMIT ?"
+    params.append(limit)
+    cur.execute(query, params)
+    rows = [dict_factory(r) for r in cur.fetchall()]
+    conn.close()
+    return rows
+
+
+def check_permission(role: str, operation: str) -> bool:
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT allowed FROM permissions WHERE role = ? AND operation = ?",
+        (role, operation),
+    )
+    row = cur.fetchone()
+    conn.close()
+    if row is None:
+        return False
+    return bool(row["allowed"])
+
+
+def list_permissions() -> List[Dict[str, Any]]:
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM permissions ORDER BY role, operation")
+    rows = [dict_factory(r) for r in cur.fetchall()]
+    conn.close()
+    for r in rows:
+        r["allowed"] = bool(r["allowed"])
+    return rows
+
+
+def get_correction(correction_id: int) -> Optional[Dict[str, Any]]:
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM corrections WHERE id = ?", (correction_id,))
+    row = cur.fetchone()
+    conn.close()
+    if row is None:
+        return None
+    r = dict_factory(row)
+    r["is_reverted"] = bool(r.get("is_reverted", 0))
+    return r
+
+
+def mark_correction_reverted(correction_id: int, operator: Optional[str] = None) -> bool:
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        UPDATE corrections
+        SET is_reverted = 1, reverted_at = ?, reverted_by = ?
+        WHERE id = ? AND is_reverted = 0
+        """,
+        (now_iso(), operator, correction_id),
+    )
+    updated = cur.rowcount > 0
+    conn.commit()
+    conn.close()
+    return updated

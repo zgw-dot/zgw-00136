@@ -16,6 +16,15 @@ def get_connection() -> sqlite3.Connection:
     return conn
 
 
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+    cur = conn.cursor()
+    cur.execute(f"PRAGMA table_info({table})")
+    cols = [row[1] for row in cur.fetchall()]
+    if column not in cols:
+        cur.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+        conn.commit()
+
+
 def init_db() -> None:
     conn = get_connection()
     cur = conn.cursor()
@@ -31,7 +40,9 @@ def init_db() -> None:
             file_hash TEXT NOT NULL UNIQUE,
             columns_info TEXT NOT NULL,
             created_at TEXT NOT NULL,
-            note TEXT
+            note TEXT,
+            source_type TEXT DEFAULT 'manual_upload',
+            operator TEXT
         )
     """)
 
@@ -51,6 +62,7 @@ def init_db() -> None:
             created_at TEXT NOT NULL,
             training_completed_at TEXT,
             note TEXT,
+            operator TEXT,
             FOREIGN KEY (dataset_version) REFERENCES dataset_versions(version)
         )
     """)
@@ -70,6 +82,7 @@ def init_db() -> None:
             train_samples INTEGER NOT NULL,
             test_samples INTEGER NOT NULL,
             created_at TEXT NOT NULL,
+            operator TEXT,
             FOREIGN KEY (model_version) REFERENCES model_versions(version),
             FOREIGN KEY (dataset_version) REFERENCES dataset_versions(version)
         )
@@ -84,6 +97,10 @@ def init_db() -> None:
             corrected_label TEXT NOT NULL,
             reason TEXT NOT NULL,
             created_at TEXT NOT NULL,
+            operator TEXT,
+            is_reverted INTEGER NOT NULL DEFAULT 0,
+            reverted_at TEXT,
+            reverted_by TEXT,
             FOREIGN KEY (model_version) REFERENCES model_versions(version)
         )
     """)
@@ -95,7 +112,8 @@ def init_db() -> None:
             new_active_version TEXT,
             operation_type TEXT NOT NULL,
             operator_note TEXT,
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            operator TEXT
         )
     """)
 
@@ -109,9 +127,12 @@ def init_db() -> None:
             total_rows INTEGER NOT NULL DEFAULT 0,
             predicted_count INTEGER NOT NULL DEFAULT 0,
             conflict_count INTEGER NOT NULL DEFAULT 0,
+            corrected_count INTEGER NOT NULL DEFAULT 0,
             status TEXT NOT NULL DEFAULT 'completed',
             note TEXT,
             created_at TEXT NOT NULL,
+            source_type TEXT DEFAULT 'manual_upload',
+            operator TEXT,
             FOREIGN KEY (model_version) REFERENCES model_versions(version),
             FOREIGN KEY (dataset_version) REFERENCES dataset_versions(version)
         )
@@ -133,8 +154,13 @@ def init_db() -> None:
             corrected_label TEXT,
             correction_reason TEXT,
             correction_id INTEGER,
+            previous_label TEXT,
+            previous_reason TEXT,
+            previous_operator TEXT,
+            previous_corrected_at TEXT,
             created_at TEXT NOT NULL,
             corrected_at TEXT,
+            corrected_by TEXT,
             FOREIGN KEY (batch_id) REFERENCES batch_predictions(batch_id),
             FOREIGN KEY (correction_id) REFERENCES corrections(id)
         )
@@ -156,6 +182,7 @@ def init_db() -> None:
             item_count INTEGER NOT NULL DEFAULT 0,
             note TEXT,
             created_at TEXT NOT NULL,
+            operator TEXT,
             FOREIGN KEY (batch_id) REFERENCES batch_predictions(batch_id)
         )
     """)
@@ -178,6 +205,89 @@ def init_db() -> None:
     cur.execute("""
         CREATE INDEX IF NOT EXISTS idx_op_logs_entity ON operation_logs(entity_type, entity_id)
     """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS correction_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            correction_id INTEGER NOT NULL,
+            batch_id TEXT,
+            batch_item_id INTEGER,
+            model_version TEXT NOT NULL,
+            clause_text TEXT NOT NULL,
+            previous_label TEXT,
+            previous_reason TEXT,
+            previous_operator TEXT,
+            previous_corrected_at TEXT,
+            new_label TEXT NOT NULL,
+            new_reason TEXT NOT NULL,
+            new_operator TEXT,
+            operation_type TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (correction_id) REFERENCES corrections(id),
+            FOREIGN KEY (batch_id) REFERENCES batch_predictions(batch_id)
+        )
+    """)
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_corr_hist_corr ON correction_history(correction_id)
+    """)
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_corr_hist_batch ON correction_history(batch_id)
+    """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS permissions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            role TEXT NOT NULL,
+            operation TEXT NOT NULL,
+            allowed INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            UNIQUE(role, operation)
+        )
+    """)
+
+    _ensure_column(conn, "dataset_versions", "source_type", "TEXT DEFAULT 'manual_upload'")
+    _ensure_column(conn, "dataset_versions", "operator", "TEXT")
+    _ensure_column(conn, "model_versions", "operator", "TEXT")
+    _ensure_column(conn, "evaluations", "operator", "TEXT")
+    _ensure_column(conn, "corrections", "operator", "TEXT")
+    _ensure_column(conn, "corrections", "is_reverted", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(conn, "corrections", "reverted_at", "TEXT")
+    _ensure_column(conn, "corrections", "reverted_by", "TEXT")
+    _ensure_column(conn, "rollback_logs", "operator", "TEXT")
+    _ensure_column(conn, "batch_predictions", "corrected_count", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(conn, "batch_predictions", "source_type", "TEXT DEFAULT 'manual_upload'")
+    _ensure_column(conn, "batch_predictions", "operator", "TEXT")
+    _ensure_column(conn, "batch_items", "previous_label", "TEXT")
+    _ensure_column(conn, "batch_items", "previous_reason", "TEXT")
+    _ensure_column(conn, "batch_items", "previous_operator", "TEXT")
+    _ensure_column(conn, "batch_items", "previous_corrected_at", "TEXT")
+    _ensure_column(conn, "batch_items", "corrected_by", "TEXT")
+    _ensure_column(conn, "export_files", "operator", "TEXT")
+
+    cur.execute("SELECT COUNT(*) FROM permissions")
+    if cur.fetchone()[0] == 0:
+        default_perms = [
+            ("admin", "batch_view", 1),
+            ("admin", "batch_create", 1),
+            ("admin", "batch_export", 1),
+            ("admin", "correction_create", 1),
+            ("admin", "correction_revert", 1),
+            ("admin", "model_train", 1),
+            ("admin", "model_activate", 1),
+            ("admin", "dataset_import", 1),
+            ("reviewer", "batch_view", 1),
+            ("reviewer", "batch_export", 1),
+            ("reviewer", "correction_create", 1),
+            ("reviewer", "correction_revert", 1),
+            ("viewer", "batch_view", 1),
+            ("viewer", "batch_export", 1),
+        ]
+        for role, op, allowed in default_perms:
+            cur.execute(
+                "INSERT INTO permissions (role, operation, allowed, created_at) VALUES (?, ?, ?, ?)",
+                (role, op, allowed, now_iso()),
+            )
+        conn.commit()
 
     conn.commit()
     conn.close()

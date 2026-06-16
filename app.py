@@ -29,6 +29,9 @@ from src.version_manager import (
     list_evaluations,
     list_operation_logs,
     add_operation_log,
+    list_correction_history,
+    list_permissions,
+    check_permission,
 )
 from src.trainer import train_model, TrainingError, DEFAULT_HYPERPARAMS
 from src.predictor import (
@@ -36,6 +39,7 @@ from src.predictor import (
     predict_batch,
     predict_csv,
     record_correction,
+    revert_correction,
     PredictionError,
 )
 from src.evaluator import (
@@ -51,6 +55,7 @@ from src.batch_manager import (
     get_batch,
     get_batch_items,
     get_batch_item_count,
+    get_batch_detail,
     export_batch_to_csv,
     list_exports,
     get_export,
@@ -96,6 +101,16 @@ class CorrectionRequest(BaseModel):
     model_version: Optional[str] = None
     batch_id: Optional[str] = None
     batch_item_id: Optional[int] = None
+    operator: Optional[str] = None
+    role: Optional[str] = "admin"
+
+
+class RevertCorrectionRequest(BaseModel):
+    correction_id: int
+    batch_id: Optional[str] = None
+    batch_item_id: Optional[int] = None
+    operator: Optional[str] = None
+    role: Optional[str] = "admin"
 
 
 class TrainRequest(BaseModel):
@@ -376,6 +391,8 @@ async def api_add_correction(req: CorrectionRequest):
             model_version=req.model_version,
             batch_id=req.batch_id,
             batch_item_id=req.batch_item_id,
+            operator=req.operator,
+            role=req.role,
         )
         return {"success": True, **result}
     except PredictionError as e:
@@ -383,6 +400,37 @@ async def api_add_correction(req: CorrectionRequest):
             status_code=400,
             content={"success": False, "error": str(e)},
         )
+
+
+@app.post("/api/corrections/{correction_id}/revert")
+async def api_revert_correction(correction_id: int, req: RevertCorrectionRequest):
+    try:
+        result = revert_correction(
+            correction_id=correction_id,
+            batch_id=req.batch_id,
+            batch_item_id=req.batch_item_id,
+            operator=req.operator,
+            role=req.role,
+        )
+        return {"success": True, **result}
+    except PredictionError as e:
+        return JSONResponse(
+            status_code=400,
+            content={"success": False, "error": str(e)},
+        )
+
+
+@app.get("/api/corrections/history")
+async def api_list_correction_history(
+    correction_id: Optional[int] = None,
+    batch_id: Optional[str] = None,
+    limit: int = 100,
+):
+    return list_correction_history(
+        correction_id=correction_id,
+        batch_id=batch_id,
+        limit=limit,
+    )
 
 
 @app.get("/api/corrections")
@@ -492,9 +540,32 @@ async def api_create_batch(
 @app.get("/api/batches")
 async def api_list_batches(
     model_version: Optional[str] = None,
+    dataset_version: Optional[str] = None,
+    created_from: Optional[str] = None,
+    created_to: Optional[str] = None,
+    source_type: Optional[str] = None,
+    has_conflicts: Optional[str] = None,
+    has_corrections: Optional[str] = None,
     limit: int = 50,
+    role: str = "admin",
 ):
-    return list_batches(model_version=model_version, limit=limit)
+    try:
+        return list_batches(
+            model_version=model_version,
+            dataset_version=dataset_version,
+            created_from=created_from,
+            created_to=created_to,
+            source_type=source_type,
+            has_conflicts=has_conflicts,
+            has_corrections=has_corrections,
+            limit=limit,
+            role=role,
+        )
+    except BatchError as e:
+        return JSONResponse(
+            status_code=403,
+            content={"success": False, "error": str(e)},
+        )
 
 
 @app.get("/api/batches/{batch_id}")
@@ -504,6 +575,23 @@ async def api_get_batch(batch_id: str):
         raise HTTPException(status_code=404, detail=f"批次不存在: {batch_id}")
     counts = get_batch_item_count(batch_id)
     return {**batch, "item_counts": counts}
+
+
+@app.get("/api/batches/{batch_id}/detail")
+async def api_get_batch_detail(
+    batch_id: str,
+    role: str = "admin",
+):
+    try:
+        detail = get_batch_detail(batch_id, role=role)
+    except BatchError as e:
+        return JSONResponse(
+            status_code=403,
+            content={"success": False, "error": str(e)},
+        )
+    if detail is None:
+        raise HTTPException(status_code=404, detail=f"批次不存在: {batch_id}")
+    return detail
 
 
 @app.get("/api/batches/{batch_id}/items")
@@ -621,9 +709,28 @@ async def api_list_operation_logs(
     )
 
 
+@app.get("/api/permissions")
+async def api_list_permissions():
+    return list_permissions()
+
+
+@app.get("/api/permissions/check")
+async def api_check_permission(role: str, operation: str):
+    allowed = check_permission(role, operation)
+    return {"role": role, "operation": operation, "allowed": allowed}
+
+
 @app.get("/health")
 async def health_check():
     active = get_active_model_version()
+    try:
+        batch_count = len(list_batches(limit=1000, role=None))
+    except Exception:
+        batch_count = 0
+    try:
+        export_count = len(list_exports(limit=1000))
+    except Exception:
+        export_count = 0
     return {
         "status": "ok",
         "db_exists": os.path.exists(os.path.join(BASE_DIR, "data", "app.db")),
@@ -632,6 +739,6 @@ async def health_check():
         "models": len(list_model_versions()),
         "evaluations": len(list_evaluations()),
         "corrections": len(list_corrections()),
-        "batches": len(list_batches(limit=1000)),
-        "exports": len(list_exports(limit=1000)),
+        "batches": batch_count,
+        "exports": export_count,
     }
