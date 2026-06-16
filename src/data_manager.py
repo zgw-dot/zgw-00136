@@ -111,9 +111,12 @@ def validate_csv(filepath: str) -> ValidationResult:
     label_mask = df["风险标签"].apply(_is_nonempty)
     result.empty_label_count = int((~label_mask).sum())
     if result.empty_label_count > 0:
-        result.warnings.append(
-            f"存在 {result.empty_label_count} 行风险标签为空，训练时将被排除"
+        result.valid = False
+        result.errors.append(
+            f"存在 {result.empty_label_count} 行风险标签为空（风险标签是必填列）。"
+            f"请先补全所有行的标签后再导入，不得有空标签行。"
         )
+        return result
 
     labeled_df = df[valid_mask & label_mask].copy()
 

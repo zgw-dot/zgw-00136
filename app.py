@@ -102,6 +102,20 @@ async def index(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
 
 
+SAMPLE_DATA_PATH = os.path.join(BASE_DIR, "sample_data", "contracts_sample.csv")
+
+
+@app.get("/sample_data/contracts_sample.csv")
+async def sample_data_csv():
+    if not os.path.exists(SAMPLE_DATA_PATH):
+        raise HTTPException(status_code=404, detail="样例数据文件不存在")
+    return FileResponse(
+        SAMPLE_DATA_PATH,
+        media_type="text/csv",
+        filename="contracts_sample.csv",
+    )
+
+
 @app.get("/api/info")
 async def api_info():
     active = get_active_model_version()
