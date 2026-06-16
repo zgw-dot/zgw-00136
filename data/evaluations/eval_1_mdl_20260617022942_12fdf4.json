@@ -1,7 +1,7 @@
 {
-  "evaluation_id": 2,
-  "model_version": "mdl_20260617012635_6955ef",
-  "dataset_version": "ds_20260617011714_b8e96f",
+  "evaluation_id": 1,
+  "model_version": "mdl_20260617022942_12fdf4",
+  "dataset_version": "ds_20260617022942_0c08bb",
   "metrics": {
     "accuracy": 0.9166666666666666,
     "precision_macro": 0.8333333333333334,
@@ -67,5 +67,5 @@
     "train_samples": 51,
     "test_samples": 12
   },
-  "generated_at": "2026-06-17T01:40:05.243783"
+  "generated_at": "2026-06-17T02:29:43.367652"
 }

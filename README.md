@@ -8,8 +8,8 @@
 
 | 模块 | 说明 |
 |------|------|
-| 数据导入 | 上传 CSV，校验必填列（`条款文本` `风险标签`），空标签/空文本自动警告，生成 **数据集版本** |
-| 模型训练 | TF-IDF 中文分词 + LogisticRegression（balanced class_weight），训练失败**不替换现役模型** |
+| 数据导入 | 上传 CSV，校验必填列（`条款文本` `风险标签`），**空标签行直接拒绝导入**，生成 **数据集版本** |
+| 模型训练 | TF-IDF 中文分词 + LogisticRegression（lbfgs, balanced class_weight），训练失败**不替换现役模型** |
 | 评估报告 | Accuracy / Precision / Recall / F1（macro）+ 混淆矩阵 + 分类报告；**每项指标绑定模型+数据集版本** |
 | 条款预测 | 单条 / 批量 CSV 预测，返回 Top-K 概率；未训练直接预测返回明确错误 |
 | 人工改判 | 保存条款原文 + 预测标签 + 改判标签 + **改判原因** + 归属模型版本 |
@@ -23,19 +23,13 @@
 ## 2. 复现实验（三步启动）
 
 ### 环境要求
-- Python 3.9 ~ 3.12（推荐 3.10/3.11）
+- Python 3.10+（已验证 3.13）
 - Windows / Linux / macOS 均可
 
 ### Step 1. 安装依赖
 
 ```bash
 cd d:\workSpace\AI__SPACE\02-label\zgw-00136
-python -m venv .venv
-# Windows PowerShell
-.venv\Scripts\Activate.ps1
-# 或 Linux/macOS
-# source .venv/bin/activate
-
 pip install -r requirements.txt
 ```
 
@@ -49,24 +43,24 @@ pip install -r requirements.txt
 ### Step 2. 启动服务
 
 ```bash
-uvicorn app:app --host 127.0.0.1 --port 8000 --reload
+uvicorn app:app --host 127.0.0.1 --port 8001 --reload
 ```
 
-浏览器打开 **<http://127.0.0.1:8001>**（注意：下面的启动命令使用 8001 端口以避免冲突，详见 Step 3）。
+浏览器打开 **http://127.0.0.1:8001**
 
 ### Step 3. 完整实验流程（CLI + curl 或直接用网页）
 
 #### 3.1 健康检查
 ```bash
-curl http://127.0.0.1:8000/health
+curl http://127.0.0.1:8001/health
 ```
 
 #### 3.2 校验内置样例 CSV
-样例文件：`sample_data/contracts_sample.csv`（含 66 条条款，其中故意混入 2 条**空标签**、1 条**缺失标签列**，用于测试失败路径）。
+样例文件：`sample_data/contracts_sample.csv`（63 条条款，3 类各 21 条，0 条空标签）。
 
 ```bash
 curl -X POST -F "file=@sample_data/contracts_sample.csv" \
-  http://127.0.0.1:8000/api/datasets/validate
+  http://127.0.0.1:8001/api/datasets/validate
 ```
 
 #### 3.3 导入数据集（自动生成版本号 `ds_*`）
@@ -74,9 +68,9 @@ curl -X POST -F "file=@sample_data/contracts_sample.csv" \
 ```bash
 curl -X POST \
   -F "file=@sample_data/contracts_sample.csv" \
-  -F "note=内置样例数据-含空标签测试" \
+  -F "note=内置样例数据" \
   -F "drop_empty_text=true" \
-  http://127.0.0.1:8000/api/datasets/import
+  http://127.0.0.1:8001/api/datasets/import
 ```
 
 返回示例：
@@ -84,7 +78,7 @@ curl -X POST \
 {
   "success": true,
   "dataset_version": "ds_20260617000000_a1b2c3",
-  "validation": { "labeled_count": 63, "label_distribution": {...} }
+  "validation": { "labeled_count": 63, "label_distribution": {"付款":21,"违约":21,"自动续约":21} }
 }
 ```
 
@@ -93,13 +87,13 @@ curl -X POST \
 把上一步的 `dataset_version` 替换进去：
 
 ```bash
-curl -X POST http://127.0.0.1:8000/api/models/train \
+curl -X POST http://127.0.0.1:8001/api/models/train \
   -H "Content-Type: application/json" \
   -d '{
     "dataset_version": "ds_20260617000000_a1b2c3",
     "hyperparams": {
       "vectorizer": {"max_features": 5000, "ngram_range": [1,2], "min_df": 1},
-      "classifier": {"C": 1.0, "class_weight": "balanced", "max_iter": 1000, "solver": "liblinear"},
+      "classifier": {"C": 1.0, "class_weight": "balanced", "max_iter": 1000, "solver": "lbfgs"},
       "split": {"test_size": 0.2, "random_state": 42}
     },
     "note": "默认超参首次训练",
@@ -112,7 +106,7 @@ curl -X POST http://127.0.0.1:8000/api/models/train \
 #### 3.5 运行评估（返回绑定模型+数据集版本的完整报告）
 
 ```bash
-curl -X POST http://127.0.0.1:8000/api/evaluations \
+curl -X POST http://127.0.0.1:8001/api/evaluations \
   -H "Content-Type: application/json" \
   -d '{"test_ratio": 0.2, "random_state": 42}'
 ```
@@ -125,18 +119,18 @@ curl -X POST http://127.0.0.1:8000/api/evaluations \
 
 **导出文本报告（人类可读 + 版本追溯）**：
 ```bash
-curl "http://127.0.0.1:8000/api/evaluations/1/report.txt"
+curl "http://127.0.0.1:8001/api/evaluations/1/report.txt"
 ```
 
 **导出 JSON 报告**：
 ```bash
-curl "http://127.0.0.1:8000/api/evaluations/1/report.json"
+curl "http://127.0.0.1:8001/api/evaluations/1/report.json"
 ```
 
 #### 3.6 单条条款预测
 
 ```bash
-curl -X POST http://127.0.0.1:8000/api/predict \
+curl -X POST http://127.0.0.1:8001/api/predict \
   -H "Content-Type: application/json" \
   -d '{
     "clause_text": "如卖方逾期交付超过10日，买方有权解除合同并要求支付合同总金额10%的违约金",
@@ -152,7 +146,7 @@ curl -X POST http://127.0.0.1:8000/api/predict \
 #### 3.7 人工改判 + 记录原因
 
 ```bash
-curl -X POST http://127.0.0.1:8000/api/corrections \
+curl -X POST http://127.0.0.1:8001/api/corrections \
   -H "Content-Type: application/json" \
   -d '{
     "clause_text": "（模型可能判错的某条款原文…）",
@@ -169,7 +163,7 @@ curl -X POST http://127.0.0.1:8000/api/corrections \
 #### 3.8 激活 / 回滚模型版本
 
 ```bash
-curl -X POST http://127.0.0.1:8000/api/models/mdl_xxxxx/activate \
+curl -X POST http://127.0.0.1:8001/api/models/mdl_xxxxx/activate \
   -F "operator_note=回滚到xx版本，因为新版本在违约类Recall下降5%"
 ```
 
@@ -184,13 +178,13 @@ zgw-00136/
 ├── app.py                      # FastAPI 入口，所有路由
 ├── requirements.txt
 ├── sample_data/
-│   └── contracts_sample.csv    # 内置样例（含空标签/缺列测试）
+│   └── contracts_sample.csv    # 内置样例（63条，3类各21条，0空标签）
 ├── templates/
 │   └── index.html              # 单页前端（导入/训练/评估/预测/改判/版本）
 ├── src/
 │   ├── models.py               # SQLite 初始化 + 表结构
 │   ├── version_manager.py      # 数据集/模型版本、回滚日志、评估、改判 CRUD
-│   ├── data_manager.py         # CSV 校验 + 导入 + 空标签/必填列/非法标签处理
+│   ├── data_manager.py         # CSV 校验 + 导入 + 空标签直接拒绝/必填列/非法标签处理
 │   ├── trainer.py              # TF-IDF + Logistic 训练，失败不替换现役
 │   ├── predictor.py            # 单条/批量预测 + 改判写入
 │   └── evaluator.py            # 评估 + 版本追溯 + 文本/JSON 报告生成
@@ -211,8 +205,8 @@ zgw-00136/
 | 场景 | 处理方式 |
 |------|----------|
 | CSV 缺少 `条款文本` 或 `风险标签` 列 | 返回 400 + 错误详情 + 校验 JSON |
-| 所有行标签为空 | 返回 400「没有可用的带标签样本」 |
-| 标签不在 `付款/违约/自动续约` | 统计数量 + 警告，训练时剔除 |
+| CSV 存在空风险标签行 | **导入时直接拒绝**，返回 400 + 空标签行数，不生成数据集版本 |
+| 标签不在 `付款/违约/自动续约` | 返回 400 + 非法标签列表，不生成数据集版本 |
 | 类别数 < 2 | 训练失败，写入 `failed` 状态 |
 | 测试准确率 < 0.3 | 训练失败，不激活 |
 | 未激活模型时预测 | 返回 400「尚无激活的模型」 |
@@ -222,11 +216,13 @@ zgw-00136/
 
 ---
 
-## 5. 完全离线（已验证）
+## 5. 离线说明
 
-- 代码不包含任何 `requests.post` 外网调用；
-- 模型使用 `scikit-learn` 本地训练；
-- 前端使用 Tailwind CDN（首次需要加载样式，如需彻底离线可把 Tailwind 编译为本地 CSS，或使用网页的默认样式）。
+**后端**：代码不包含任何 `requests.post` 外网调用；模型使用 `scikit-learn` 本地训练；所有数据存放在 `data/` 目录下。
+
+**前端**：Tailwind CSS 运行时（`static/tailwind.js`）已下载到本地，页面不引用任何外部 CDN。
+
+**全程完全离线可用，无需联网。**
 
 ---
 
@@ -236,38 +232,36 @@ Windows PowerShell：
 
 ```powershell
 # 1. 安装
-python -m venv .venv
-.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 
 # 2. 后台启动
-Start-Process uvicorn -ArgumentList "app:app","--host","127.0.0.1","--port","8000" -WindowStyle Hidden
+Start-Process uvicorn -ArgumentList "app:app","--host","127.0.0.1","--port","8001" -WindowStyle Hidden
 Start-Sleep -Seconds 3
 
 # 3. 导入样例
 $importResp = curl.exe -s -X POST `
   -F "file=@sample_data/contracts_sample.csv" `
   -F "note=PowerShell脚本测试" `
-  http://127.0.0.1:8000/api/datasets/import | ConvertFrom-Json
+  http://127.0.0.1:8001/api/datasets/import | ConvertFrom-Json
 $ds = $importResp.dataset_version
 Write-Host "数据集版本: $ds"
 
 # 4. 训练
 $trainBody = @{ dataset_version=$ds; auto_activate=$true; note="PS自动训练"} | ConvertTo-Json -Depth 8
-$trainResp = curl.exe -s -X POST http://127.0.0.1:8000/api/models/train `
+$trainResp = curl.exe -s -X POST http://127.0.0.1:8001/api/models/train `
   -H "Content-Type: application/json" -d $trainBody | ConvertFrom-Json
 Write-Host "模型版本: $($trainResp.model_version) · 测试Acc: $($trainResp.test_accuracy)"
 
 # 5. 评估
-$evalResp = curl.exe -s -X POST http://127.0.0.1:8000/api/evaluations `
+$evalResp = curl.exe -s -X POST http://127.0.0.1:8001/api/evaluations `
   -H "Content-Type: application/json" -d "{}" | ConvertFrom-Json
 Write-Host "评估ID: $($evalResp.evaluation_id) · F1(macro): $($evalResp.metrics.f1_macro)"
 
 # 6. 导出文本报告
-curl.exe -s "http://127.0.0.1:8000/api/evaluations/$($evalResp.evaluation_id)/report.txt"
+curl.exe -s "http://127.0.0.1:8001/api/evaluations/$($evalResp.evaluation_id)/report.txt"
 
 # 7. 预测
-curl.exe -s -X POST http://127.0.0.1:8000/api/predict `
+curl.exe -s -X POST http://127.0.0.1:8001/api/predict `
   -H "Content-Type: application/json" `
   -d '{"clause_text":"本合同到期自动续展一年，除非提前30日书面通知终止"}'
 ```
@@ -283,7 +277,7 @@ curl.exe -s -X POST http://127.0.0.1:8000/api/predict `
 期满双方无异议自动续约一年,自动续约,服务合同,2024-01-03
 ```
 
-- 必填：`条款文本` `风险标签`
+- 必填：`条款文本` `风险标签`（**不允许空值，有则导入时拒绝**）
 - 可选：`合同类型`（训练时会拼接到特征前增强分类能力）`时间`
 - 标签枚举：`付款` `违约` `自动续约`
 
@@ -294,6 +288,7 @@ curl.exe -s -X POST http://127.0.0.1:8000/api/predict `
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | GET  | `/` | 前端单页 |
+| GET  | `/sample_data/contracts_sample.csv` | 下载内置样例 CSV |
 | GET  | `/health` | 健康检查 + 数据统计 |
 | GET  | `/api/info` | 允许标签、默认超参、当前现役模型 |
 | POST | `/api/datasets/validate` | 校验 CSV |

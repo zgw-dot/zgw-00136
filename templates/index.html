@@ -4,7 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>合同条款风险标注训练工具</title>
-<script src="https://cdn.tailwindcss.com"></script>
+<script src="/static/tailwind.js"></script>
 <style>
   body { font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
   .tab-btn.active { background:#2563eb; color:white; }
@@ -48,7 +48,7 @@
   <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
     <div class="bg-white p-5 rounded-lg shadow border">
       <h3 class="font-semibold mb-3">1. 上传CSV并校验</h3>
-      <p class="text-sm text-slate-600 mb-3">必填列：<code class="bg-slate-100 px-1 rounded">条款文本</code>、<code class="bg-slate-100 px-1 rounded">风险标签</code>；可选列：<code class="bg-slate-100 px-1 rounded">合同类型</code>、<code class="bg-slate-100 px-1 rounded">时间</code>。标签须为 <b>付款/违约/自动续约</b>。</p>
+      <p class="text-sm text-slate-600 mb-3">必填列：<code class="bg-slate-100 px-1 rounded">条款文本</code>、<code class="bg-slate-100 px-1 rounded">风险标签</code>（<b>不允许空值，有则拒绝导入</b>）；可选列：<code class="bg-slate-100 px-1 rounded">合同类型</code>、<code class="bg-slate-100 px-1 rounded">时间</code>。标签须为 <b>付款/违约/自动续约</b>。</p>
       <input id="importFile" type="file" accept=".csv" class="block w-full text-sm mb-3" />
       <div class="flex gap-2 flex-wrap">
         <button id="btnValidate" class="bg-slate-200 hover:bg-slate-300 text-slate-800 px-4 py-2 rounded text-sm font-medium">校验CSV</button>
@@ -392,7 +392,7 @@ $("btnTrain").onclick = async () => {
     },
     classifier: {
       C: +$("hpC").value,
-      class_weight: "balanced", max_iter: 1000, solver: "liblinear",
+      class_weight: "balanced", max_iter: 1000, solver: "lbfgs",
     },
     split: {test_size: +$("hpTest").value, random_state: 42},
   };
