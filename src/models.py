@@ -25,6 +25,44 @@ def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition
         conn.commit()
 
 
+def ensure_permissions(conn: sqlite3.Connection) -> None:
+    cur = conn.cursor()
+    default_perms = [
+        ("admin", "batch_view", 1),
+        ("admin", "batch_create", 1),
+        ("admin", "batch_export", 1),
+        ("admin", "batch_audit_export", 1),
+        ("admin", "correction_create", 1),
+        ("admin", "correction_revert", 1),
+        ("admin", "model_train", 1),
+        ("admin", "model_activate", 1),
+        ("admin", "dataset_import", 1),
+        ("admin", "filter_scheme_manage", 1),
+        ("reviewer", "batch_view", 1),
+        ("reviewer", "batch_export", 1),
+        ("reviewer", "batch_audit_export", 1),
+        ("reviewer", "correction_create", 1),
+        ("reviewer", "correction_revert", 1),
+        ("reviewer", "filter_scheme_manage", 1),
+        ("viewer", "batch_view", 1),
+        ("viewer", "batch_export", 1),
+        ("viewer", "batch_audit_export", 0),
+        ("viewer", "filter_scheme_manage", 0),
+    ]
+    for role, op, allowed in default_perms:
+        cur.execute(
+            "SELECT allowed FROM permissions WHERE role = ? AND operation = ?",
+            (role, op),
+        )
+        row = cur.fetchone()
+        if row is None:
+            cur.execute(
+                "INSERT INTO permissions (role, operation, allowed, created_at) VALUES (?, ?, ?, ?)",
+                (role, op, allowed, now_iso()),
+            )
+    conn.commit()
+
+
 def init_db() -> None:
     conn = get_connection()
     cur = conn.cursor()
@@ -235,6 +273,32 @@ def init_db() -> None:
     """)
 
     cur.execute("""
+        CREATE TABLE IF NOT EXISTS filter_schemes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            owner TEXT NOT NULL DEFAULT 'default',
+            is_default INTEGER NOT NULL DEFAULT 0,
+            model_version TEXT,
+            dataset_version TEXT,
+            created_from TEXT,
+            created_to TEXT,
+            source_type TEXT,
+            has_conflicts TEXT,
+            has_corrections TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(name, owner)
+        )
+    """)
+
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_filter_schemes_owner ON filter_schemes(owner)
+    """)
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_filter_schemes_default ON filter_schemes(owner, is_default)
+    """)
+
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS permissions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             role TEXT NOT NULL,
@@ -270,17 +334,23 @@ def init_db() -> None:
             ("admin", "batch_view", 1),
             ("admin", "batch_create", 1),
             ("admin", "batch_export", 1),
+            ("admin", "batch_audit_export", 1),
             ("admin", "correction_create", 1),
             ("admin", "correction_revert", 1),
             ("admin", "model_train", 1),
             ("admin", "model_activate", 1),
             ("admin", "dataset_import", 1),
+            ("admin", "filter_scheme_manage", 1),
             ("reviewer", "batch_view", 1),
             ("reviewer", "batch_export", 1),
+            ("reviewer", "batch_audit_export", 1),
             ("reviewer", "correction_create", 1),
             ("reviewer", "correction_revert", 1),
+            ("reviewer", "filter_scheme_manage", 1),
             ("viewer", "batch_view", 1),
             ("viewer", "batch_export", 1),
+            ("viewer", "batch_audit_export", 0),
+            ("viewer", "filter_scheme_manage", 0),
         ]
         for role, op, allowed in default_perms:
             cur.execute(
@@ -288,6 +358,8 @@ def init_db() -> None:
                 (role, op, allowed, now_iso()),
             )
         conn.commit()
+    else:
+        ensure_permissions(conn)
 
     conn.commit()
     conn.close()

@@ -32,6 +32,13 @@ from src.version_manager import (
     list_correction_history,
     list_permissions,
     check_permission,
+    list_filter_schemes,
+    get_filter_scheme,
+    get_default_filter_scheme,
+    create_filter_scheme,
+    update_filter_scheme,
+    set_default_filter_scheme,
+    delete_filter_scheme,
 )
 from src.trainer import train_model, TrainingError, DEFAULT_HYPERPARAMS
 from src.predictor import (
@@ -57,6 +64,7 @@ from src.batch_manager import (
     get_batch_item_count,
     get_batch_detail,
     export_batch_to_csv,
+    export_audit_to_csv,
     list_exports,
     get_export,
     BatchError,
@@ -125,6 +133,32 @@ class EvaluateRequest(BaseModel):
     dataset_version: Optional[str] = None
     test_ratio: float = 0.2
     random_state: int = 42
+
+
+class FilterSchemeCreateRequest(BaseModel):
+    name: str
+    is_default: bool = False
+    model_version: Optional[str] = None
+    dataset_version: Optional[str] = None
+    created_from: Optional[str] = None
+    created_to: Optional[str] = None
+    source_type: Optional[str] = None
+    has_conflicts: Optional[str] = None
+    has_corrections: Optional[str] = None
+    owner: str = "default"
+
+
+class FilterSchemeUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    is_default: Optional[bool] = None
+    model_version: Optional[str] = None
+    dataset_version: Optional[str] = None
+    created_from: Optional[str] = None
+    created_to: Optional[str] = None
+    source_type: Optional[str] = None
+    has_conflicts: Optional[str] = None
+    has_corrections: Optional[str] = None
+    owner: str = "default"
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -641,19 +675,27 @@ async def api_export_batch(
     batch_id: str,
     export_type: str,
     note: Optional[str] = Form(None),
+    role: str = Form("admin"),
 ):
-    if export_type not in ("prediction", "training"):
+    if export_type not in ("prediction", "training", "audit"):
         raise HTTPException(status_code=400, detail=f"不支持的导出类型: {export_type}")
     try:
-        result = export_batch_to_csv(
-            batch_id=batch_id,
-            export_type=export_type,
-            note=note,
-        )
+        if export_type == "audit":
+            result = export_audit_to_csv(
+                batch_id=batch_id,
+                note=note,
+                role=role,
+            )
+        else:
+            result = export_batch_to_csv(
+                batch_id=batch_id,
+                export_type=export_type,
+                note=note,
+            )
         return {"success": True, **result}
     except BatchError as e:
         return JSONResponse(
-            status_code=400,
+            status_code=400 if export_type != "audit" else 403,
             content={"success": False, "error": str(e)},
         )
 
@@ -662,17 +704,25 @@ async def api_export_batch(
 async def api_download_batch_export(
     batch_id: str,
     export_type: str,
+    role: str = "admin",
 ):
-    if export_type not in ("prediction", "training"):
+    if export_type not in ("prediction", "training", "audit"):
         raise HTTPException(status_code=400, detail=f"不支持的导出类型: {export_type}")
     try:
-        result = export_batch_to_csv(
-            batch_id=batch_id,
-            export_type=export_type,
-            note=None,
-        )
+        if export_type == "audit":
+            result = export_audit_to_csv(
+                batch_id=batch_id,
+                note=None,
+                role=role,
+            )
+        else:
+            result = export_batch_to_csv(
+                batch_id=batch_id,
+                export_type=export_type,
+                note=None,
+            )
     except BatchError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400 if export_type != "audit" else 403, detail=str(e))
 
     file_path = result["file_path"]
     if not os.path.exists(file_path):
@@ -683,6 +733,132 @@ async def api_download_batch_export(
         media_type="text/csv",
         filename=result["filename"],
     )
+
+
+# ========== Filter Schemes APIs ==========
+
+@app.get("/api/filter-schemes")
+async def api_list_filter_schemes(owner: str = "default", role: str = "admin"):
+    if not check_permission(role, "batch_view"):
+        return JSONResponse(
+            status_code=403,
+            content={"success": False, "error": f"角色 '{role}' 没有查看权限"},
+        )
+    return list_filter_schemes(owner=owner)
+
+
+@app.get("/api/filter-schemes/default")
+async def api_get_default_filter_scheme(owner: str = "default", role: str = "admin"):
+    if not check_permission(role, "batch_view"):
+        return JSONResponse(
+            status_code=403,
+            content={"success": False, "error": f"角色 '{role}' 没有查看权限"},
+        )
+    scheme = get_default_filter_scheme(owner=owner)
+    if scheme is None:
+        return {"default": None}
+    return {"default": scheme}
+
+
+@app.get("/api/filter-schemes/{scheme_id}")
+async def api_get_filter_scheme(scheme_id: int, owner: str = "default", role: str = "admin"):
+    if not check_permission(role, "batch_view"):
+        return JSONResponse(
+            status_code=403,
+            content={"success": False, "error": f"角色 '{role}' 没有查看权限"},
+        )
+    scheme = get_filter_scheme(scheme_id, owner=owner)
+    if scheme is None:
+        raise HTTPException(status_code=404, detail=f"筛选方案不存在: {scheme_id}")
+    return scheme
+
+
+@app.post("/api/filter-schemes")
+async def api_create_filter_scheme(req: FilterSchemeCreateRequest, role: str = "admin"):
+    if not check_permission(role, "filter_scheme_manage"):
+        return JSONResponse(
+            status_code=403,
+            content={"success": False, "error": f"角色 '{role}' 没有管理筛选方案的权限"},
+        )
+    if not req.name or not req.name.strip():
+        return JSONResponse(
+            status_code=400,
+            content={"success": False, "error": "筛选方案名称不能为空"},
+        )
+    try:
+        scheme = create_filter_scheme(
+            name=req.name.strip(),
+            owner=req.owner,
+            is_default=req.is_default,
+            model_version=req.model_version,
+            dataset_version=req.dataset_version,
+            created_from=req.created_from,
+            created_to=req.created_to,
+            source_type=req.source_type,
+            has_conflicts=req.has_conflicts,
+            has_corrections=req.has_corrections,
+        )
+        return {"success": True, **scheme}
+    except ValueError as e:
+        return JSONResponse(
+            status_code=409,
+            content={"success": False, "error": str(e)},
+        )
+
+
+@app.put("/api/filter-schemes/{scheme_id}")
+async def api_update_filter_scheme(scheme_id: int, req: FilterSchemeUpdateRequest, role: str = "admin"):
+    if not check_permission(role, "filter_scheme_manage"):
+        return JSONResponse(
+            status_code=403,
+            content={"success": False, "error": f"角色 '{role}' 没有管理筛选方案的权限"},
+        )
+    try:
+        scheme = update_filter_scheme(
+            scheme_id=scheme_id,
+            owner=req.owner,
+            name=req.name.strip() if req.name else None,
+            is_default=req.is_default,
+            model_version=req.model_version,
+            dataset_version=req.dataset_version,
+            created_from=req.created_from,
+            created_to=req.created_to,
+            source_type=req.source_type,
+            has_conflicts=req.has_conflicts,
+            has_corrections=req.has_corrections,
+        )
+        return {"success": True, **scheme}
+    except ValueError as e:
+        return JSONResponse(
+            status_code=404 if "不存在" in str(e) else 409,
+            content={"success": False, "error": str(e)},
+        )
+
+
+@app.post("/api/filter-schemes/{scheme_id}/default")
+async def api_set_default_filter_scheme(scheme_id: int, owner: str = "default", role: str = "admin"):
+    if not check_permission(role, "filter_scheme_manage"):
+        return JSONResponse(
+            status_code=403,
+            content={"success": False, "error": f"角色 '{role}' 没有管理筛选方案的权限"},
+        )
+    ok = set_default_filter_scheme(scheme_id, owner=owner)
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"筛选方案不存在: {scheme_id}")
+    return {"success": True, "scheme_id": scheme_id, "is_default": True}
+
+
+@app.delete("/api/filter-schemes/{scheme_id}")
+async def api_delete_filter_scheme(scheme_id: int, owner: str = "default", role: str = "admin"):
+    if not check_permission(role, "filter_scheme_manage"):
+        return JSONResponse(
+            status_code=403,
+            content={"success": False, "error": f"角色 '{role}' 没有管理筛选方案的权限"},
+        )
+    ok = delete_filter_scheme(scheme_id, owner=owner)
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"筛选方案不存在: {scheme_id}")
+    return {"success": True, "scheme_id": scheme_id}
 
 
 @app.get("/api/exports")

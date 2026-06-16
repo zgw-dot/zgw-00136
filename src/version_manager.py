@@ -2,6 +2,7 @@ import hashlib
 import json
 import os
 import shutil
+import sqlite3
 import uuid
 from datetime import datetime
 from typing import Optional, List, Dict, Any, Tuple
@@ -589,3 +590,236 @@ def mark_correction_reverted(correction_id: int, operator: Optional[str] = None)
     conn.commit()
     conn.close()
     return updated
+
+
+def list_filter_schemes(owner: str = "default") -> List[Dict[str, Any]]:
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT * FROM filter_schemes WHERE owner = ? ORDER BY is_default DESC, updated_at DESC",
+        (owner,),
+    )
+    rows = [dict_factory(r) for r in cur.fetchall()]
+    conn.close()
+    for r in rows:
+        r["is_default"] = bool(r["is_default"])
+    return rows
+
+
+def get_filter_scheme(scheme_id: int, owner: str = "default") -> Optional[Dict[str, Any]]:
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT * FROM filter_schemes WHERE id = ? AND owner = ?",
+        (scheme_id, owner),
+    )
+    row = cur.fetchone()
+    conn.close()
+    if row is None:
+        return None
+    r = dict_factory(row)
+    r["is_default"] = bool(r["is_default"])
+    return r
+
+
+def get_default_filter_scheme(owner: str = "default") -> Optional[Dict[str, Any]]:
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT * FROM filter_schemes WHERE owner = ? AND is_default = 1 LIMIT 1",
+        (owner,),
+    )
+    row = cur.fetchone()
+    conn.close()
+    if row is None:
+        return None
+    r = dict_factory(row)
+    r["is_default"] = bool(r["is_default"])
+    return r
+
+
+def create_filter_scheme(
+    name: str,
+    owner: str = "default",
+    is_default: bool = False,
+    model_version: Optional[str] = None,
+    dataset_version: Optional[str] = None,
+    created_from: Optional[str] = None,
+    created_to: Optional[str] = None,
+    source_type: Optional[str] = None,
+    has_conflicts: Optional[str] = None,
+    has_corrections: Optional[str] = None,
+) -> Dict[str, Any]:
+    conn = get_connection()
+    cur = conn.cursor()
+
+    try:
+        if is_default:
+            cur.execute(
+                "UPDATE filter_schemes SET is_default = 0, updated_at = ? WHERE owner = ? AND is_default = 1",
+                (now_iso(), owner),
+            )
+
+        cur.execute(
+            """
+            INSERT INTO filter_schemes
+            (name, owner, is_default, model_version, dataset_version,
+             created_from, created_to, source_type, has_conflicts,
+             has_corrections, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                name,
+                owner,
+                1 if is_default else 0,
+                model_version,
+                dataset_version,
+                created_from,
+                created_to,
+                source_type,
+                has_conflicts,
+                has_corrections,
+                now_iso(),
+                now_iso(),
+            ),
+        )
+        scheme_id = cur.lastrowid
+        conn.commit()
+    except sqlite3.IntegrityError:
+        conn.close()
+        raise ValueError(f"筛选方案名称 '{name}' 已存在，请使用其他名称")
+
+    conn.close()
+
+    result = get_filter_scheme(scheme_id, owner)
+    if result is None:
+        raise RuntimeError("创建筛选方案失败")
+    return result
+
+
+def update_filter_scheme(
+    scheme_id: int,
+    owner: str = "default",
+    name: Optional[str] = None,
+    is_default: Optional[bool] = None,
+    model_version: Optional[str] = None,
+    dataset_version: Optional[str] = None,
+    created_from: Optional[str] = None,
+    created_to: Optional[str] = None,
+    source_type: Optional[str] = None,
+    has_conflicts: Optional[str] = None,
+    has_corrections: Optional[str] = None,
+) -> Dict[str, Any]:
+    conn = get_connection()
+    cur = conn.cursor()
+
+    existing = get_filter_scheme(scheme_id, owner)
+    if existing is None:
+        conn.close()
+        raise ValueError(f"筛选方案不存在: {scheme_id}")
+
+    try:
+        updates: List[str] = []
+        params: List[Any] = []
+
+        if name is not None and name != existing["name"]:
+            updates.append("name = ?")
+            params.append(name)
+        if is_default is not None:
+            updates.append("is_default = ?")
+            params.append(1 if is_default else 0)
+        if model_version is not None:
+            updates.append("model_version = ?")
+            params.append(model_version)
+        if dataset_version is not None:
+            updates.append("dataset_version = ?")
+            params.append(dataset_version)
+        if created_from is not None:
+            updates.append("created_from = ?")
+            params.append(created_from)
+        if created_to is not None:
+            updates.append("created_to = ?")
+            params.append(created_to)
+        if source_type is not None:
+            updates.append("source_type = ?")
+            params.append(source_type)
+        if has_conflicts is not None:
+            updates.append("has_conflicts = ?")
+            params.append(has_conflicts)
+        if has_corrections is not None:
+            updates.append("has_corrections = ?")
+            params.append(has_corrections)
+
+        if not updates:
+            conn.close()
+            return existing
+
+        updates.append("updated_at = ?")
+        params.append(now_iso())
+        params.append(scheme_id)
+        params.append(owner)
+
+        if is_default:
+            cur.execute(
+                "UPDATE filter_schemes SET is_default = 0, updated_at = ? WHERE owner = ? AND is_default = 1 AND id != ?",
+                (now_iso(), owner, scheme_id),
+            )
+
+        cur.execute(
+            f"UPDATE filter_schemes SET {', '.join(updates)} WHERE id = ? AND owner = ?",
+            params,
+        )
+        conn.commit()
+    except sqlite3.IntegrityError:
+        conn.close()
+        raise ValueError(f"筛选方案名称 '{name}' 已存在，请使用其他名称")
+
+    conn.close()
+
+    result = get_filter_scheme(scheme_id, owner)
+    if result is None:
+        raise RuntimeError("更新筛选方案失败")
+    return result
+
+
+def set_default_filter_scheme(scheme_id: int, owner: str = "default") -> bool:
+    conn = get_connection()
+    cur = conn.cursor()
+
+    existing = get_filter_scheme(scheme_id, owner)
+    if existing is None:
+        conn.close()
+        return False
+
+    cur.execute(
+        "UPDATE filter_schemes SET is_default = 0, updated_at = ? WHERE owner = ? AND is_default = 1",
+        (now_iso(), owner),
+    )
+    cur.execute(
+        "UPDATE filter_schemes SET is_default = 1, updated_at = ? WHERE id = ? AND owner = ?",
+        (now_iso(), scheme_id, owner),
+    )
+    conn.commit()
+    conn.close()
+    return True
+
+
+def delete_filter_scheme(scheme_id: int, owner: str = "default") -> bool:
+    conn = get_connection()
+    cur = conn.cursor()
+
+    existing = get_filter_scheme(scheme_id, owner)
+    if existing is None:
+        conn.close()
+        return False
+
+    was_default = existing["is_default"]
+
+    cur.execute(
+        "DELETE FROM filter_schemes WHERE id = ? AND owner = ?",
+        (scheme_id, owner),
+    )
+    conn.commit()
+    conn.close()
+
+    return True

@@ -184,6 +184,20 @@
   <div id="batch-tab-batch" class="hidden">
     <div class="bg-white p-4 rounded-lg shadow border mb-4">
       <h3 class="font-semibold mb-3">🔍 批次工作台 - 筛选条件</h3>
+      <div class="mb-3 p-3 bg-slate-50 rounded border border-slate-200">
+        <div class="flex items-center gap-2 mb-2 flex-wrap">
+          <label class="text-xs font-medium text-slate-600">筛选方案:</label>
+          <select id="filterSchemeSelect" class="px-2 py-1 border rounded text-xs min-w-[150px]">
+            <option value="">-- 选择方案 --</option>
+          </select>
+          <button id="btnSaveScheme" class="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1 rounded text-xs font-medium">💾 保存当前</button>
+          <button id="btnSetDefault" class="bg-amber-600 hover:bg-amber-700 text-white px-3 py-1 rounded text-xs font-medium">⭐ 设为默认</button>
+          <button id="btnDeleteScheme" class="bg-rose-600 hover:bg-rose-700 text-white px-3 py-1 rounded text-xs font-medium">🗑️ 删除</button>
+        </div>
+        <div class="text-xs text-slate-500">
+          <span id="currentSchemeInfo">未选择方案</span>
+        </div>
+      </div>
       <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 text-xs">
         <div>
           <label class="block font-medium mb-1">模型版本</label>
@@ -275,6 +289,7 @@
               <div class="flex gap-2 flex-wrap">
                 <a id="btnExportPrediction" href="#" class="text-xs bg-blue-100 hover:bg-blue-200 text-blue-800 px-3 py-1.5 rounded font-medium">📄 导出预测结果</a>
                 <a id="btnExportTraining" href="#" class="text-xs bg-emerald-100 hover:bg-emerald-200 text-emerald-800 px-3 py-1.5 rounded font-medium">📥 导出训练CSV</a>
+                <a id="btnExportAudit" href="#" class="text-xs bg-purple-100 hover:bg-purple-200 text-purple-800 px-3 py-1.5 rounded font-medium">🔍 导出审计报告</a>
               </div>
             </div>
 
@@ -919,6 +934,7 @@ document.querySelectorAll(".batch-tab-btn").forEach(btn => {
     if (tab === "batch") {
       refreshBatchPredModel();
       refreshFilterSelects();
+      loadDefaultFilterScheme();
       refreshBatchHistory();
     }
   });
@@ -949,6 +965,194 @@ async function refreshFilterSelects() {
   datasets.forEach(d => { const o=document.createElement("option"); o.value=d.version; o.textContent=`${d.version} · ${d.filename}`; ds.appendChild(o); });
   const st = $("fSourceType"); st.innerHTML = '<option value="">全部</option>';
   (Array.isArray(sourceTypes)?sourceTypes:[]).forEach(v => { const o=document.createElement("option"); o.value=v; o.textContent=v; st.appendChild(o); });
+  await refreshFilterSchemes();
+}
+
+let currentFilterSchemeId = null;
+
+async function refreshFilterSchemes() {
+  try {
+    const schemes = await fetch(API + "/api/filter-schemes").then(x=>x.json());
+    const select = $("filterSchemeSelect");
+    select.innerHTML = '<option value="">-- 选择方案 --</option>';
+    schemes.forEach(s => {
+      const o = document.createElement("option");
+      o.value = s.id;
+      o.textContent = s.name + (s.is_default ? " ⭐" : "");
+      select.appendChild(o);
+    });
+    if (currentFilterSchemeId) {
+      select.value = currentFilterSchemeId;
+      updateSchemeInfo(currentFilterSchemeId, schemes);
+    } else {
+      $("currentSchemeInfo").textContent = "未选择方案";
+    }
+  } catch(e) {
+    console.error("Failed to load filter schemes:", e);
+  }
+}
+
+function updateSchemeInfo(schemeId, schemes) {
+  const scheme = schemes.find(s => s.id == schemeId);
+  if (!scheme) {
+    $("currentSchemeInfo").textContent = "未选择方案";
+    return;
+  }
+  const parts = [];
+  if (scheme.is_default) parts.push("⭐ 默认");
+  if (scheme.model_version) parts.push(`模型: ${scheme.model_version}`);
+  if (scheme.dataset_version) parts.push(`数据: ${scheme.dataset_version}`);
+  if (scheme.source_type) parts.push(`来源: ${scheme.source_type}`);
+  if (scheme.has_conflicts) parts.push(`冲突: ${scheme.has_conflicts === 'yes' ? '有' : '无'}`);
+  if (scheme.has_corrections) parts.push(`改判: ${scheme.has_corrections === 'yes' ? '有' : '无'}`);
+  if (scheme.created_from || scheme.created_to) {
+    const range = [];
+    if (scheme.created_from) range.push(fmtTime(scheme.created_from));
+    if (scheme.created_to) range.push(fmtTime(scheme.created_to));
+    parts.push(`时间: ${range.join(' ~ ')}`);
+  }
+  $("currentSchemeInfo").textContent = `当前: ${scheme.name}` + (parts.length ? ` | ${parts.join(' · ')}` : '');
+}
+
+function getCurrentFilterValues() {
+  return {
+    model_version: $("fModelVersion").value || null,
+    dataset_version: $("fDatasetVersion").value || null,
+    source_type: $("fSourceType").value || null,
+    created_from: $("fCreatedFrom").value ? new Date($("fCreatedFrom").value).toISOString() : null,
+    created_to: $("fCreatedTo").value ? new Date($("fCreatedTo").value).toISOString() : null,
+    has_conflicts: $("fHasConflicts").value || null,
+    has_corrections: $("fHasCorrections").value || null,
+  };
+}
+
+function applyFilterScheme(scheme) {
+  if (!scheme) return;
+  $("fModelVersion").value = scheme.model_version || "";
+  $("fDatasetVersion").value = scheme.dataset_version || "";
+  $("fSourceType").value = scheme.source_type || "";
+  $("fHasConflicts").value = scheme.has_conflicts || "";
+  $("fHasCorrections").value = scheme.has_corrections || "";
+  if (scheme.created_from) {
+    const d = new Date(scheme.created_from);
+    $("fCreatedFrom").value = d.toISOString().slice(0, 16);
+  } else {
+    $("fCreatedFrom").value = "";
+  }
+  if (scheme.created_to) {
+    const d = new Date(scheme.created_to);
+    $("fCreatedTo").value = d.toISOString().slice(0, 16);
+  } else {
+    $("fCreatedTo").value = "";
+  }
+  currentFilterSchemeId = scheme.id;
+  refreshBatchHistory();
+}
+
+$("filterSchemeSelect").addEventListener("change", async () => {
+  const schemeId = $("filterSchemeSelect").value;
+  if (!schemeId) {
+    currentFilterSchemeId = null;
+    $("currentSchemeInfo").textContent = "未选择方案";
+    return;
+  }
+  try {
+    const scheme = await fetch(API + "/api/filter-schemes/" + schemeId).then(x=>x.json());
+    if (scheme) {
+      applyFilterScheme(scheme);
+      const schemes = await fetch(API + "/api/filter-schemes").then(x=>x.json());
+      updateSchemeInfo(schemeId, schemes);
+      toast(`已应用筛选方案: ${scheme.name}`, "success");
+    }
+  } catch(e) {
+    toast("加载筛选方案失败", "error");
+  }
+});
+
+$("btnSaveScheme").onclick = async () => {
+  const name = prompt("请输入筛选方案名称：", "");
+  if (!name || !name.trim()) return;
+  const filters = getCurrentFilterValues();
+  const setAsDefault = confirm("是否设为默认方案？");
+  try {
+    const res = await fetch(API + "/api/filter-schemes", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        name: name.trim(),
+        is_default: setAsDefault,
+        ...filters,
+      }),
+    }).then(x=>x.json());
+    if (res.success) {
+      toast(`方案已保存: ${res.name}`, "success");
+      currentFilterSchemeId = res.id;
+      await refreshFilterSchemes();
+    } else {
+      toast("保存失败: " + res.error, "error");
+    }
+  } catch(e) {
+    toast("保存失败", "error");
+  }
+};
+
+$("btnSetDefault").onclick = async () => {
+  const schemeId = $("filterSchemeSelect").value;
+  if (!schemeId) {
+    toast("请先选择一个筛选方案", "error");
+    return;
+  }
+  try {
+    const res = await fetch(API + "/api/filter-schemes/" + schemeId + "/default", {
+      method: "POST",
+    }).then(x=>x.json());
+    if (res.success) {
+      toast("已设为默认方案", "success");
+      await refreshFilterSchemes();
+    } else {
+      toast("设置失败", "error");
+    }
+  } catch(e) {
+    toast("设置失败", "error");
+  }
+};
+
+$("btnDeleteScheme").onclick = async () => {
+  const schemeId = $("filterSchemeSelect").value;
+  if (!schemeId) {
+    toast("请先选择一个筛选方案", "error");
+    return;
+  }
+  const schemeName = $("filterSchemeSelect").options[$("filterSchemeSelect").selectedIndex].text.replace(" ⭐", "");
+  if (!confirm(`确认删除筛选方案 "${schemeName}"？`)) return;
+  try {
+    const res = await fetch(API + "/api/filter-schemes/" + schemeId, {
+      method: "DELETE",
+    }).then(x=>x.json());
+    if (res.success) {
+      toast("方案已删除", "success");
+      currentFilterSchemeId = null;
+      $("filterSchemeSelect").value = "";
+      await refreshFilterSchemes();
+    } else {
+      toast("删除失败", "error");
+    }
+  } catch(e) {
+    toast("删除失败", "error");
+  }
+};
+
+async function loadDefaultFilterScheme() {
+  try {
+    const res = await fetch(API + "/api/filter-schemes/default").then(x=>x.json());
+    if (res.default) {
+      applyFilterScheme(res.default);
+      const schemes = await fetch(API + "/api/filter-schemes").then(x=>x.json());
+      updateSchemeInfo(res.default.id, schemes);
+    }
+  } catch(e) {
+    console.error("Failed to load default scheme:", e);
+  }
 }
 
 $("btnApplyFilter").onclick = refreshBatchHistory;
@@ -1087,6 +1291,20 @@ async function showBatchDetail(batchId) {
 
   $("btnExportPrediction").href = API + "/api/batches/" + batchId + "/export/prediction/download";
   $("btnExportTraining").href = API + "/api/batches/" + batchId + "/export/training/download";
+  $("btnExportAudit").href = API + "/api/batches/" + batchId + "/export/audit/download";
+  $("btnExportAudit").onclick = async (e) => {
+    e.preventDefault();
+    try {
+      const permCheck = await fetch(API + "/api/permissions/check?role=admin&operation=batch_audit_export").then(x=>x.json());
+      if (!permCheck.allowed) {
+        toast("您没有审计导出权限", "error");
+        return;
+      }
+      window.location.href = $("btnExportAudit").href;
+    } catch(err) {
+      window.location.href = $("btnExportAudit").href;
+    }
+  };
 
   renderBatchItems(itemsResp.items);
   renderExports(detail.exports || []);

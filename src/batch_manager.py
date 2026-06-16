@@ -817,3 +817,125 @@ def get_batch_by_item_id(item_id: int) -> Optional[Dict[str, Any]]:
     if row is None:
         return None
     return dict_factory(row)
+
+
+def export_audit_to_csv(
+    batch_id: str,
+    note: Optional[str] = None,
+    role: Optional[str] = "admin",
+) -> Dict[str, Any]:
+    if role and not check_permission(role, "batch_audit_export"):
+        raise BatchError(f"角色 '{role}' 没有审计导出的权限")
+
+    batch = get_batch(batch_id)
+    if batch is None:
+        raise BatchError(f"批次不存在: {batch_id}")
+
+    items = get_batch_items(batch_id, include_conflicts=True, limit=10000)
+    all_logs = list_operation_logs(entity_type="batch", entity_id=batch_id, limit=1000)
+    corr_logs = list_operation_logs(entity_type="correction", limit=5000)
+    batch_corr_logs = [
+        l for l in corr_logs
+        if (l.get("details") or {}).get("batch_id") == batch_id
+    ]
+    all_operation_logs = sorted(
+        all_logs + batch_corr_logs,
+        key=lambda x: x.get("created_at", ""),
+        reverse=True,
+    )
+
+    correction_hist = list_correction_history(batch_id=batch_id, limit=10000)
+
+    export_id = _gen_export_id()
+    filename = f"{batch['batch_id']}_audit.csv"
+    file_path = os.path.join(EXPORTS_DIR, filename)
+
+    rows = []
+    for item in items:
+        previous_label = item.get("previous_label") or ""
+        previous_operator = item.get("previous_operator") or ""
+        previous_corrected_at = item.get("previous_corrected_at") or ""
+
+        conflict_info = ""
+        if item.get("is_conflict"):
+            conflict_info = item.get("conflict_reason") or "重复条款"
+
+        recent_ops = [
+            l for l in all_operation_logs
+            if (l.get("details") or {}).get("batch_item_id") == item["id"]
+        ][:5]
+        recent_ops_str = "; ".join([
+            f"{l.get('operation_type')}@{l.get('created_at','')[:19]}"
+            for l in recent_ops
+        ]) if recent_ops else ""
+
+        item_corr_hist = [
+            h for h in correction_hist
+            if h.get("batch_item_id") == item["id"]
+        ]
+        change_history = "; ".join([
+            f"{h.get('operation_type')}:{h.get('previous_label','')}→{h.get('new_label')}@{h.get('created_at','')[:19]}"
+            for h in item_corr_hist
+        ]) if item_corr_hist else ""
+
+        rows.append({
+            "序号": item["row_index"] + 1,
+            "原文": item["clause_text"],
+            "合同类型": item.get("contract_type", ""),
+            "原始导入来源": batch.get("source_type", ""),
+            "预测标签": item["predicted_label"],
+            "置信度": f"{item['confidence']:.4f}" if item["confidence"] else "",
+            "改判前标签": previous_label,
+            "改判后标签": item.get("corrected_label") or "",
+            "当前生效标签": item.get("corrected_label") or item["predicted_label"],
+            "改判原因": item.get("correction_reason") or "",
+            "冲突摘要": conflict_info,
+            "是否冲突": "是" if item.get("is_conflict") else "否",
+            "最近操作日志": recent_ops_str,
+            "改判历史": change_history,
+            "前次操作人": previous_operator,
+            "前次改判时间": previous_corrected_at,
+            "最后操作人": item.get("corrected_by") or "",
+            "最后改判时间": item.get("corrected_at") or "",
+            "模型版本": batch["model_version"],
+            "数据集版本": batch["dataset_version"],
+            "批次ID": batch["batch_id"],
+            "批次时间": batch["created_at"],
+            "导出时间": now_iso(),
+        })
+
+    df_out = pd.DataFrame(rows)
+    df_out.to_csv(file_path, index=False, encoding="utf-8-sig")
+
+    _save_export_record(
+        export_id=export_id,
+        batch_id=batch["batch_id"],
+        export_type="audit",
+        filename=filename,
+        file_path=file_path,
+        model_version=batch["model_version"],
+        item_count=len(items),
+        note=note,
+    )
+
+    add_operation_log(
+        operation_type="batch_export_audit",
+        entity_type="batch",
+        entity_id=batch["batch_id"],
+        details={
+            "export_id": export_id,
+            "export_type": "audit",
+            "item_count": len(items),
+            "role": role,
+        },
+    )
+
+    return {
+        "export_id": export_id,
+        "export_type": "audit",
+        "filename": filename,
+        "file_path": file_path,
+        "item_count": len(items),
+        "batch_id": batch["batch_id"],
+        "model_version": batch["model_version"],
+    }
