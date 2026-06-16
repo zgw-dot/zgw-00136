@@ -283,7 +283,230 @@ curl.exe -s -X POST http://127.0.0.1:8001/api/predict `
 
 ---
 
-## 8. 常用 API 速查
+## 8. 批量预测增强模块 · 复跑步骤
+
+新增功能：批次工作台多维度筛选、详情聚合面板、可撤销改判全链路、导出记录双轨、角色权限、导入来源追踪。
+
+### 8.1 环境准备（先决条件）
+```bash
+# 1. 确认服务正在运行
+curl http://127.0.0.1:8001/health
+
+# 2. 确保至少有 1 个已训练且激活的模型
+curl http://127.0.0.1:8001/api/models/active
+```
+如果没有，执行 README 第 2 章 3.3（导入数据集）+ 3.4（训练模型，`auto_activate=true`）。
+
+---
+
+### 8.2 批次列表 · 多维度筛选（含导入来源）
+浏览器打开 **http://127.0.0.1:8001** → 切换到「批量预测」Tab。
+
+筛选面板共 7 项：
+| 筛选项 | 控件类型 | 说明 |
+|---|---|---|
+| 模型版本 | 下拉（从 /api/models 填充） | 按批次绑定的 `model_version` 精确筛选 |
+| 数据集版本 | 下拉（从 /api/datasets 填充） | 按批次绑定的 `dataset_version` 精确筛选 |
+| 导入来源 | 下拉（从 /api/batches/source_types 填充） | 按 `source_type` 精确筛选（`manual_upload` / `system_import` / `review_batch` 等） |
+| 开始时间 / 结束时间 | `datetime-local` | 按 `created_at` 区间筛选，前端转 ISO 提交 |
+| 冲突状态 | 下拉（全部/有冲突/无冲突） | 按 `conflict_count > 0` 过滤 |
+| 改判状态 | 下拉（全部/已改判/未改判） | 按 `corrected_count > 0` 过滤 |
+
+#### 操作步骤（GUI）
+1. 在 7 个筛选项中任选条件；
+2. 点击「应用筛选」→ 左侧「批次历史」自动刷新；
+3. 点击「重置」→ 所有筛选项清空，刷新显示全部批次；
+4. 点击「刷新」→ 用当前筛选条件重新拉取。
+
+#### 操作步骤（CLI，验证筛选结果变化）
+```bash
+# a) 分别创建 3 个不同 source_type 的批次
+#    准备 CSV：
+cat > /tmp/b.csv <<EOF
+条款文本,合同类型
+货物验收合格后支付90%货款,采购合同
+质保期一年，质保金10%,采购合同
+EOF
+
+# 批次 A - source_type=manual_upload
+curl -s -X POST http://127.0.0.1:8001/api/batches \
+  -F "file=@/tmp/b.csv" -F "note=来源A" -F "source_type=manual_upload" | jq .
+
+# 批次 B - source_type=system_import
+curl -s -X POST http://127.0.0.1:8001/api/batches \
+  -F "file=@/tmp/b.csv" -F "note=来源B" -F "source_type=system_import" | jq .
+
+# 批次 C - source_type=review_batch
+curl -s -X POST http://127.0.0.1:8001/api/batches \
+  -F "file=@/tmp/b.csv" -F "note=来源C" -F "source_type=review_batch" | jq .
+
+# b) 验证导入来源下拉能拿到 3 个值
+curl -s http://127.0.0.1:8001/api/batches/source_types | jq .
+# => ["manual_upload", "review_batch", "system_import"]
+
+# c) 单独筛选 system_import — 只返回批次 B
+curl -s "http://127.0.0.1:8001/api/batches?source_type=system_import&limit=200" \
+  | jq '[.[] | {batch_id, source_type}]'
+
+# d) 组合筛选：manual_upload + 无冲突
+curl -s "http://127.0.0.1:8001/api/batches?source_type=manual_upload&has_conflicts=no" \
+  | jq '[.[] | {batch_id, source_type, conflict_count}]'
+
+# e) 不存在的 source_type 返回空
+curl -s "http://127.0.0.1:8001/api/batches?source_type=不存在的来源" | jq length
+# => 0
+```
+
+---
+
+### 8.3 批次详情聚合面板
+GUI：点击左侧任意批次卡片 → 右侧出现 1 个信息条 + 4 个 Tab。
+
+| Tab | 数据来源字段 | 说明 |
+|---|---|---|
+| 导出记录 | `exports` | 预测导出 `prediction` + 训练回流 `training` 两类，含 `export_id` / `created_at` / `operator` |
+| 改判摘要 | `corrected_items_summary` | 批次内每条改判的条款/标签/原因/操作人/时间 |
+| 冲突原因 | `conflict_items` | 所有标记 `is_conflict=1` 的项及冲突说明 |
+| 操作日志 | `operation_logs` | 聚合 `entity_type="batch"` + `details.batch_id=<当前>` 的 correction 日志 |
+
+#### CLI 验证
+```bash
+# 拿一个 batch_id 替换下面
+BID=btc_20260617xxxxxx_xxxxxx
+
+# 聚合详情
+curl -s "http://127.0.0.1:8001/api/batches/$BID/detail" | jq '.
+  | {batch_id, filename, exports_cnt: (.exports|length),
+     corrections_cnt: (.corrected_items_summary|length),
+     conflicts_cnt: (.conflict_items|length),
+     logs_cnt: (.operation_logs|length)}'
+```
+
+---
+
+### 8.4 可撤销改判流程（含历史 + 撤回）
+**链路：改判 → 保存 previous_* → 写入 correction_history → 撤回 → 恢复 previous_label → 同步到导出/审计**
+
+#### GUI 操作
+1. 批次详情 → 下方「批次项」表格 → 任一行点「改判」→ 填标签+原因+操作人 → 确认；
+2. 观察「改判摘要」Tab 中出现新记录，「操作日志」出现 `correction_create`；
+3. 再次改判同一行 → 观察 `previous_label` 被回填为第一次的标签；
+4. 点「撤回」按钮（只在已改判行显示）→ 输入操作人 → 确认 → 标签恢复为 `previous_label`（或清空为预测值），「操作日志」出现 `correction_revert`。
+
+#### CLI 验证
+```bash
+# 1) 创建改判
+curl -s -X POST http://127.0.0.1:8001/api/corrections \
+  -H "Content-Type: application/json" \
+  -d '{
+    "batch_id": "'$BID'",
+    "batch_item_id": 1,
+    "clause_text": "货物验收合格后支付90%货款",
+    "predicted_label": "付款",
+    "corrected_label": "违约",
+    "reason": "此条款实际约定逾期赔偿责任",
+    "model_version": "mdl_xxxxx",
+    "operator": "tester_alice",
+    "role": "reviewer"
+  }' | jq '{success, correction_id}'
+
+CID=<上一步返回的 correction_id>
+
+# 2) 查改判历史（能看到 operation_type=create）
+curl -s "http://127.0.0.1:8001/api/corrections/history?batch_id=$BID" | jq '[.[]|{operation_type,new_label,previous_label,new_operator}]'
+
+# 3) 撤回改判（operation_type=revert）
+curl -s -X POST "http://127.0.0.1:8001/api/corrections/$CID/revert" \
+  -H "Content-Type: application/json" \
+  -d '{"batch_id":"'$BID'","batch_item_id":1,"operator":"tester_admin","role":"admin"}' | jq .
+
+# 4) 再次查历史（新增 operation_type=revert）
+curl -s "http://127.0.0.1:8001/api/corrections/history?batch_id=$BID" | jq length
+```
+
+---
+
+### 8.5 导出记录（预测 + 训练回流双轨）
+**重要**：改判被撤回后，导出内容会自动使用撤回后的当前标签，不需要手动刷新。
+
+```bash
+# 预测导出（含模型版本 + 当前标签/改判标签）
+curl -s -o /tmp/prediction.csv \
+  "http://127.0.0.1:8001/api/batches/$BID/export/prediction/download"
+head -3 /tmp/prediction.csv
+
+# 训练回流导出（只有含 true_label 或 corrected_label 的行，用于增量训练）
+curl -s -o /tmp/training.csv \
+  "http://127.0.0.1:8001/api/batches/$BID/export/training/download"
+head -3 /tmp/training.csv
+```
+
+在批次详情「导出记录」Tab 可看到每次导出的 `export_id`、`export_type`、创建时间、操作人。
+
+---
+
+### 8.6 权限校验（3 角色）
+| 角色 | batch_view | correction_create | correction_revert | model_train/activate | dataset_import |
+|---|---|---|---|---|---|
+| `admin` | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `reviewer` | ✅ | ✅ | ✅ | ❌ | ✅ |
+| `viewer` | ✅ | ❌ | ❌ | ❌ | ❌ |
+
+验证：
+```bash
+# admin 可以撤回
+curl -s "http://127.0.0.1:8001/api/permissions/check?role=admin&operation=correction_revert"
+# => {"allowed":true}
+
+# reviewer 不能激活模型
+curl -s "http://127.0.0.1:8001/api/permissions/check?role=reviewer&operation=model_activate"
+# => {"allowed":false}
+
+# viewer 不能改判
+curl -s "http://127.0.0.1:8001/api/permissions/check?role=viewer&operation=correction_create"
+# => {"allowed":false}
+
+# 列表 API 也带 role 参数，没有 batch_view 权限的角色会被拒绝
+curl -s "http://127.0.0.1:8001/api/batches?role=viewer"
+# => 200 + 列表（viewer 只读）
+```
+
+---
+
+### 8.7 重启后验证链路
+1. **停止服务（仅当前 uvicorn PID，禁止按进程名批量杀）**
+2. **重新启动** `uvicorn app:app --host 127.0.0.1 --port 8001`
+3. **验证持久化**：
+   ```bash
+   # 导入来源下拉仍可拉到之前的值
+   curl -s http://127.0.0.1:8001/api/batches/source_types | jq .
+
+   # 之前创建的批次、改判历史、撤回记录仍能查到
+   curl -s "http://127.0.0.1:8001/api/batches/$BID/detail" \
+     | jq '{batch_id, corrections_cnt: (.correction_history|length), logs_cnt: (.operation_logs|length)}'
+
+   # 导出文件仍能下载（data/exports/ 目录持久化）
+   curl -s -o /tmp/restart_test.csv \
+     "http://127.0.0.1:8001/api/batches/$BID/export/prediction/download"
+   wc -l /tmp/restart_test.csv
+   ```
+
+---
+
+### 8.8 一键跑完所有验证（回归测试）
+项目根目录下 3 个测试脚本：
+
+| 脚本 | 覆盖范围 | 测试数 |
+|---|---|---|
+| `python regression_test.py` | 全部原功能 + 新增 6 组（改判撤回/筛选/详情/权限/冲突/重启） | ~150 |
+| `python enhanced_test.py` | 新增增强功能专项（6 大类） | 115 |
+| `python source_type_test.py` | 导入来源筛选专项（5 大类） | 48 |
+
+全部通过即为绿（exit code=0）。
+
+---
+
+## 9. 常用 API 速查
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
@@ -302,10 +525,25 @@ curl.exe -s -X POST http://127.0.0.1:8001/api/predict `
 | POST | `/api/predict` | 单条预测 |
 | POST | `/api/predict/batch` | 多条 JSON 预测 |
 | POST | `/api/predict/csv` | CSV 批量预测 |
-| POST | `/api/corrections` | 记录人工改判（+ 原因） |
+| POST | `/api/corrections` | 记录人工改判（含 operator/role，自动写 previous_* 快照） |
 | GET  | `/api/corrections` | 改判历史（可按 model_version 过滤） |
+| GET  | `/api/corrections/history` | 改判 + 撤回全链路历史（operation_type=create/revert） |
+| POST | `/api/corrections/{id}/revert` | 撤回改判（恢复 previous_label + 写审计日志 + 同步导出） |
+| GET  | `/api/permissions` | 角色权限矩阵列表 |
+| GET  | `/api/permissions/check?role=admin&operation=correction_revert` | 单操作权限校验 |
+| GET  | `/api/batches` | 批次工作台列表（7 维度筛选 + role 权限） |
+| GET  | `/api/batches/source_types` | 所有 distinct 导入来源值（下拉填充用） |
+| POST | `/api/batches` | 上传 CSV 创建批量预测（支持 source_type 表单字段） |
+| GET  | `/api/batches/{batch_id}` | 批次基础信息 + 统计 |
+| GET  | `/api/batches/{batch_id}/detail` | 批次详情聚合（导出/改判摘要/冲突原因/操作日志） |
+| GET  | `/api/batches/{batch_id}/items` | 批次项明细（含预测标签/改判标签/冲突标记） |
+| POST | `/api/batches/{batch_id}/export/prediction` | 发起预测导出 |
+| POST | `/api/batches/{batch_id}/export/training` | 发起训练回流导出 |
+| GET  | `/api/batches/{batch_id}/export/prediction/download` | 下载预测结果 CSV |
+| GET  | `/api/batches/{batch_id}/export/training/download` | 下载训练回流 CSV |
 | POST | `/api/evaluations` | 运行评估 |
 | GET  | `/api/evaluations/{id}` | 评估详情 |
 | GET  | `/api/evaluations/{id}/report.txt` | 文本报告 |
 | GET  | `/api/evaluations/{id}/report.json` | JSON 报告 |
 | GET  | `/api/rollback-logs` | 激活/回滚日志 |
+| GET  | `/api/operation-logs` | 操作审计日志（可按 entity_type/entity_id 过滤） |

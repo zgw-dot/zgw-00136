@@ -184,7 +184,7 @@
   <div id="batch-tab-batch" class="hidden">
     <div class="bg-white p-4 rounded-lg shadow border mb-4">
       <h3 class="font-semibold mb-3">🔍 批次工作台 - 筛选条件</h3>
-      <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 text-xs">
+      <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 text-xs">
         <div>
           <label class="block font-medium mb-1">模型版本</label>
           <select id="fModelVersion" class="w-full px-2 py-1.5 border rounded">
@@ -194,6 +194,12 @@
         <div>
           <label class="block font-medium mb-1">数据集版本</label>
           <select id="fDatasetVersion" class="w-full px-2 py-1.5 border rounded">
+            <option value="">全部</option>
+          </select>
+        </div>
+        <div>
+          <label class="block font-medium mb-1">导入来源</label>
+          <select id="fSourceType" class="w-full px-2 py-1.5 border rounded">
             <option value="">全部</option>
           </select>
         </div>
@@ -964,20 +970,24 @@ document.querySelectorAll(".detail-tab-btn").forEach(btn => {
 });
 
 async function refreshFilterSelects() {
-  const [models, datasets] = await Promise.all([
+  const [models, datasets, sourceTypes] = await Promise.all([
     fetch(API + "/api/models").then(x=>x.json()),
     fetch(API + "/api/datasets").then(x=>x.json()),
+    fetch(API + "/api/batches/source_types").then(x=>x.json()),
   ]);
   const ms = $("fModelVersion"); ms.innerHTML = '<option value="">全部</option>';
   models.forEach(m => { const o=document.createElement("option"); o.value=m.version; o.textContent=m.version; ms.appendChild(o); });
   const ds = $("fDatasetVersion"); ds.innerHTML = '<option value="">全部</option>';
   datasets.forEach(d => { const o=document.createElement("option"); o.value=d.version; o.textContent=`${d.version} · ${d.filename}`; ds.appendChild(o); });
+  const st = $("fSourceType"); st.innerHTML = '<option value="">全部</option>';
+  (Array.isArray(sourceTypes)?sourceTypes:[]).forEach(v => { const o=document.createElement("option"); o.value=v; o.textContent=v; st.appendChild(o); });
 }
 
 $("btnApplyFilter").onclick = refreshBatchHistory;
 $("btnResetFilter").onclick = () => {
   $("fModelVersion").value = "";
   $("fDatasetVersion").value = "";
+  $("fSourceType").value = "";
   $("fCreatedFrom").value = "";
   $("fCreatedTo").value = "";
   $("fHasConflicts").value = "";
@@ -1047,6 +1057,7 @@ async function refreshBatchHistory() {
   const params = new URLSearchParams();
   const mv = $("fModelVersion").value; if (mv) params.set("model_version", mv);
   const dv = $("fDatasetVersion").value; if (dv) params.set("dataset_version", dv);
+  const st = $("fSourceType").value; if (st) params.set("source_type", st);
   const cf = $("fCreatedFrom").value; if (cf) params.set("created_from", new Date(cf).toISOString());
   const ct = $("fCreatedTo").value; if (ct) params.set("created_to", new Date(ct).toISOString());
   const hc = $("fHasConflicts").value; if (hc) params.set("has_conflicts", hc);

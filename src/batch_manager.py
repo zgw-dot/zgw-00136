@@ -54,6 +54,7 @@ def create_batch_prediction(
     model_version: Optional[str] = None,
     note: Optional[str] = None,
     top_k: int = 3,
+    source_type: str = "manual_upload",
 ) -> Dict[str, Any]:
     if model_version:
         mv = get_model_version(model_version)
@@ -165,8 +166,9 @@ def create_batch_prediction(
             """
             INSERT INTO batch_predictions
             (batch_id, filename, model_version, dataset_version,
-             total_rows, predicted_count, conflict_count, status, note, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             total_rows, predicted_count, conflict_count, status, note, created_at,
+             source_type)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 batch_id,
@@ -179,6 +181,7 @@ def create_batch_prediction(
                 "completed",
                 note,
                 now_iso(),
+                source_type,
             ),
         )
 

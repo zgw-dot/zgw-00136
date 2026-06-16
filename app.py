@@ -9,7 +9,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
-from src.models import init_db
+from src.models import init_db, get_connection
 from src.data_manager import (
     validate_csv,
     import_csv,
@@ -510,6 +510,7 @@ async def api_create_batch(
     file: UploadFile = File(...),
     model_version: Optional[str] = Form(None),
     note: Optional[str] = Form(None),
+    source_type: str = Form("manual_upload"),
 ):
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".csv")
     try:
@@ -523,6 +524,7 @@ async def api_create_batch(
                 model_version=model_version,
                 note=note,
                 top_k=3,
+                source_type=source_type or "manual_upload",
             )
             return {"success": True, **result}
         except BatchError as e:
@@ -535,6 +537,19 @@ async def api_create_batch(
             os.unlink(tmp.name)
         except OSError:
             pass
+
+
+@app.get("/api/batches/source_types")
+async def api_list_batch_source_types():
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT DISTINCT source_type FROM batch_predictions WHERE source_type IS NOT NULL ORDER BY source_type"
+        )
+        return [r[0] for r in cur.fetchall() if r[0]]
+    finally:
+        conn.close()
 
 
 @app.get("/api/batches")
