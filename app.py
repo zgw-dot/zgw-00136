@@ -27,6 +27,8 @@ from src.version_manager import (
     list_corrections,
     list_rollback_logs,
     list_evaluations,
+    list_operation_logs,
+    add_operation_log,
 )
 from src.trainer import train_model, TrainingError, DEFAULT_HYPERPARAMS
 from src.predictor import (
@@ -42,6 +44,17 @@ from src.evaluator import (
     build_summary_text,
     EvaluationError,
     list_evaluations as eval_list,
+)
+from src.batch_manager import (
+    create_batch_prediction,
+    list_batches,
+    get_batch,
+    get_batch_items,
+    get_batch_item_count,
+    export_batch_to_csv,
+    list_exports,
+    get_export,
+    BatchError,
 )
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -81,6 +94,8 @@ class CorrectionRequest(BaseModel):
     corrected_label: str
     reason: str
     model_version: Optional[str] = None
+    batch_id: Optional[str] = None
+    batch_item_id: Optional[int] = None
 
 
 class TrainRequest(BaseModel):
@@ -359,6 +374,8 @@ async def api_add_correction(req: CorrectionRequest):
             corrected_label=req.corrected_label,
             reason=req.reason,
             model_version=req.model_version,
+            batch_id=req.batch_id,
+            batch_item_id=req.batch_item_id,
         )
         return {"success": True, **result}
     except PredictionError as e:
@@ -440,6 +457,170 @@ async def api_list_rollback_logs():
     return list_rollback_logs()
 
 
+@app.post("/api/batches")
+async def api_create_batch(
+    file: UploadFile = File(...),
+    model_version: Optional[str] = Form(None),
+    note: Optional[str] = Form(None),
+):
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".csv")
+    try:
+        content = await file.read()
+        tmp.write(content)
+        tmp.close()
+        try:
+            result = create_batch_prediction(
+                csv_path=tmp.name,
+                filename=file.filename or "unknown.csv",
+                model_version=model_version,
+                note=note,
+                top_k=3,
+            )
+            return {"success": True, **result}
+        except BatchError as e:
+            return JSONResponse(
+                status_code=400,
+                content={"success": False, "error": str(e)},
+            )
+    finally:
+        try:
+            os.unlink(tmp.name)
+        except OSError:
+            pass
+
+
+@app.get("/api/batches")
+async def api_list_batches(
+    model_version: Optional[str] = None,
+    limit: int = 50,
+):
+    return list_batches(model_version=model_version, limit=limit)
+
+
+@app.get("/api/batches/{batch_id}")
+async def api_get_batch(batch_id: str):
+    batch = get_batch(batch_id)
+    if batch is None:
+        raise HTTPException(status_code=404, detail=f"批次不存在: {batch_id}")
+    counts = get_batch_item_count(batch_id)
+    return {**batch, "item_counts": counts}
+
+
+@app.get("/api/batches/{batch_id}/items")
+async def api_get_batch_items(
+    batch_id: str,
+    include_conflicts: bool = True,
+    limit: int = 200,
+    offset: int = 0,
+):
+    batch = get_batch(batch_id)
+    if batch is None:
+        raise HTTPException(status_code=404, detail=f"批次不存在: {batch_id}")
+    items = get_batch_items(
+        batch_id=batch_id,
+        include_conflicts=include_conflicts,
+        limit=limit,
+        offset=offset,
+    )
+    counts = get_batch_item_count(batch_id)
+    return {
+        "batch_id": batch_id,
+        "items": items,
+        "total": counts["total"],
+        "predicted": counts["predicted"],
+        "conflicts": counts["conflicts"],
+        "corrected": counts["corrected"],
+    }
+
+
+@app.post("/api/batches/{batch_id}/export/{export_type}")
+async def api_export_batch(
+    batch_id: str,
+    export_type: str,
+    note: Optional[str] = Form(None),
+):
+    if export_type not in ("prediction", "training"):
+        raise HTTPException(status_code=400, detail=f"不支持的导出类型: {export_type}")
+    try:
+        result = export_batch_to_csv(
+            batch_id=batch_id,
+            export_type=export_type,
+            note=note,
+        )
+        return {"success": True, **result}
+    except BatchError as e:
+        return JSONResponse(
+            status_code=400,
+            content={"success": False, "error": str(e)},
+        )
+
+
+@app.get("/api/batches/{batch_id}/export/{export_type}/download")
+async def api_download_batch_export(
+    batch_id: str,
+    export_type: str,
+):
+    if export_type not in ("prediction", "training"):
+        raise HTTPException(status_code=400, detail=f"不支持的导出类型: {export_type}")
+    try:
+        result = export_batch_to_csv(
+            batch_id=batch_id,
+            export_type=export_type,
+            note=None,
+        )
+    except BatchError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    file_path = result["file_path"]
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="导出文件不存在")
+
+    return FileResponse(
+        file_path,
+        media_type="text/csv",
+        filename=result["filename"],
+    )
+
+
+@app.get("/api/exports")
+async def api_list_exports(
+    batch_id: Optional[str] = None,
+    export_type: Optional[str] = None,
+    limit: int = 50,
+):
+    return list_exports(batch_id=batch_id, export_type=export_type, limit=limit)
+
+
+@app.get("/api/exports/{export_id}/download")
+async def api_download_export(export_id: str):
+    exp = get_export(export_id)
+    if exp is None:
+        raise HTTPException(status_code=404, detail=f"导出记录不存在: {export_id}")
+    file_path = exp["file_path"]
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="导出文件已丢失")
+    return FileResponse(
+        file_path,
+        media_type="text/csv",
+        filename=exp["filename"],
+    )
+
+
+@app.get("/api/operation-logs")
+async def api_list_operation_logs(
+    operation_type: Optional[str] = None,
+    entity_type: Optional[str] = None,
+    entity_id: Optional[str] = None,
+    limit: int = 100,
+):
+    return list_operation_logs(
+        operation_type=operation_type,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        limit=limit,
+    )
+
+
 @app.get("/health")
 async def health_check():
     active = get_active_model_version()
@@ -451,4 +632,6 @@ async def health_check():
         "models": len(list_model_versions()),
         "evaluations": len(list_evaluations()),
         "corrections": len(list_corrections()),
+        "batches": len(list_batches(limit=1000)),
+        "exports": len(list_exports(limit=1000)),
     }

@@ -9,6 +9,7 @@ from .version_manager import (
     get_model_version,
     get_active_model_version,
     add_correction,
+    add_operation_log,
 )
 from .trainer import _build_features_from_dataframe
 
@@ -218,6 +219,8 @@ def record_correction(
     corrected_label: str,
     reason: str,
     model_version: Optional[str] = None,
+    batch_id: Optional[str] = None,
+    batch_item_id: Optional[int] = None,
 ) -> Dict[str, Any]:
     if not clause_text or not str(clause_text).strip():
         raise PredictionError("条款文本不能为空")
@@ -244,6 +247,30 @@ def record_correction(
         reason=str(reason).strip(),
     )
 
+    if batch_id and batch_item_id is not None:
+        from .batch_manager import update_batch_item_correction
+        update_batch_item_correction(
+            batch_id=batch_id,
+            item_id=batch_item_id,
+            corrected_label=str(corrected_label).strip(),
+            correction_reason=str(reason).strip(),
+            correction_id=correction_id,
+        )
+
+    add_operation_log(
+        operation_type="correction_create",
+        entity_type="correction",
+        entity_id=str(correction_id),
+        details={
+            "model_version": model_version,
+            "predicted_label": predicted_label,
+            "corrected_label": corrected_label,
+            "batch_id": batch_id,
+            "batch_item_id": batch_item_id,
+            "clause_preview": str(clause_text).strip()[:50],
+        },
+    )
+
     return {
         "correction_id": correction_id,
         "model_version": model_version,
@@ -251,4 +278,6 @@ def record_correction(
         "predicted_label": predicted_label,
         "corrected_label": corrected_label,
         "reason": reason,
+        "batch_id": batch_id,
+        "batch_item_id": batch_item_id,
     }

@@ -404,3 +404,62 @@ def get_evaluation(eval_id: int) -> Optional[Dict[str, Any]]:
     r["confusion_matrix"] = parse_json_field(r["confusion_matrix"])
     r["labels"] = parse_json_field(r["labels"])
     return r
+
+
+def add_operation_log(
+    operation_type: str,
+    entity_type: Optional[str] = None,
+    entity_id: Optional[str] = None,
+    details: Optional[Dict[str, Any]] = None,
+    operator: Optional[str] = None,
+) -> int:
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO operation_logs
+        (operation_type, entity_type, entity_id, details, operator, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            operation_type,
+            entity_type,
+            entity_id,
+            json.dumps(details, ensure_ascii=False) if details else None,
+            operator,
+            now_iso(),
+        ),
+    )
+    new_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+    return new_id
+
+
+def list_operation_logs(
+    operation_type: Optional[str] = None,
+    entity_type: Optional[str] = None,
+    entity_id: Optional[str] = None,
+    limit: int = 100,
+) -> List[Dict[str, Any]]:
+    conn = get_connection()
+    cur = conn.cursor()
+    query = "SELECT * FROM operation_logs WHERE 1=1"
+    params: List[Any] = []
+    if operation_type:
+        query += " AND operation_type = ?"
+        params.append(operation_type)
+    if entity_type:
+        query += " AND entity_type = ?"
+        params.append(entity_type)
+    if entity_id:
+        query += " AND entity_id = ?"
+        params.append(entity_id)
+    query += " ORDER BY created_at DESC LIMIT ?"
+    params.append(limit)
+    cur.execute(query, params)
+    rows = [dict_factory(r) for r in cur.fetchall()]
+    conn.close()
+    for r in rows:
+        r["details"] = parse_json_field(r["details"])
+    return rows

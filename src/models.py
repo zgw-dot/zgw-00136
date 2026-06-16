@@ -8,9 +8,11 @@ DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 
 
 def get_connection() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA busy_timeout = 30000")
     return conn
 
 
@@ -95,6 +97,86 @@ def init_db() -> None:
             operator_note TEXT,
             created_at TEXT NOT NULL
         )
+    """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS batch_predictions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            batch_id TEXT NOT NULL UNIQUE,
+            filename TEXT NOT NULL,
+            model_version TEXT NOT NULL,
+            dataset_version TEXT NOT NULL,
+            total_rows INTEGER NOT NULL DEFAULT 0,
+            predicted_count INTEGER NOT NULL DEFAULT 0,
+            conflict_count INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'completed',
+            note TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (model_version) REFERENCES model_versions(version),
+            FOREIGN KEY (dataset_version) REFERENCES dataset_versions(version)
+        )
+    """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS batch_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            batch_id TEXT NOT NULL,
+            row_index INTEGER NOT NULL,
+            clause_text TEXT NOT NULL,
+            contract_type TEXT,
+            predicted_label TEXT NOT NULL,
+            confidence REAL NOT NULL,
+            top_predictions TEXT NOT NULL,
+            is_conflict INTEGER NOT NULL DEFAULT 0,
+            conflict_reason TEXT,
+            true_label TEXT,
+            corrected_label TEXT,
+            correction_reason TEXT,
+            correction_id INTEGER,
+            created_at TEXT NOT NULL,
+            corrected_at TEXT,
+            FOREIGN KEY (batch_id) REFERENCES batch_predictions(batch_id),
+            FOREIGN KEY (correction_id) REFERENCES corrections(id)
+        )
+    """)
+
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_batch_items_batch_id ON batch_items(batch_id)
+    """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS export_files (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            export_id TEXT NOT NULL UNIQUE,
+            batch_id TEXT,
+            export_type TEXT NOT NULL,
+            filename TEXT NOT NULL,
+            file_path TEXT NOT NULL,
+            model_version TEXT,
+            item_count INTEGER NOT NULL DEFAULT 0,
+            note TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (batch_id) REFERENCES batch_predictions(batch_id)
+        )
+    """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS operation_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            operation_type TEXT NOT NULL,
+            entity_type TEXT,
+            entity_id TEXT,
+            details TEXT,
+            operator TEXT,
+            created_at TEXT NOT NULL
+        )
+    """)
+
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_op_logs_type ON operation_logs(operation_type)
+    """)
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_op_logs_entity ON operation_logs(entity_type, entity_id)
     """)
 
     conn.commit()
