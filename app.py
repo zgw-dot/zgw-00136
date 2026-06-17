@@ -69,6 +69,18 @@ from src.batch_manager import (
     get_export,
     BatchError,
 )
+from src.audit_share import (
+    apply_for_audit_token,
+    validate_audit_token,
+    download_audit_by_token,
+    revoke_audit_token,
+    reissue_audit_token,
+    list_audit_tokens,
+    get_audit_token,
+    list_audit_share_logs,
+    expire_audit_tokens,
+    AuditShareError,
+)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
@@ -159,6 +171,25 @@ class FilterSchemeUpdateRequest(BaseModel):
     has_conflicts: Optional[str] = None
     has_corrections: Optional[str] = None
     owner: str = "default"
+
+
+class AuditShareApplyRequest(BaseModel):
+    batch_id: str
+    applicant: str
+    applicant_role: str = "viewer"
+    expire_hours: int = 24
+    operator: Optional[str] = None
+
+
+class AuditShareRevokeRequest(BaseModel):
+    revoked_by: Optional[str] = None
+
+
+class AuditShareReissueRequest(BaseModel):
+    applicant: Optional[str] = None
+    applicant_role: Optional[str] = None
+    expire_hours: int = 24
+    operator: Optional[str] = None
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -933,3 +964,104 @@ async def health_check():
         "batches": batch_count,
         "exports": export_count,
     }
+
+
+# ========== Audit Share APIs ==========
+
+@app.post("/api/audit-share/apply")
+async def api_audit_share_apply(req: AuditShareApplyRequest):
+    try:
+        result = apply_for_audit_token(
+            batch_id=req.batch_id,
+            applicant=req.applicant,
+            applicant_role=req.applicant_role,
+            expire_hours=req.expire_hours,
+            operator=req.operator,
+        )
+        return {"success": True, **result}
+    except AuditShareError as e:
+        return JSONResponse(
+            status_code=403,
+            content={"success": False, "error": str(e)},
+        )
+
+
+@app.get("/api/audit-share/{token}/validate")
+async def api_audit_share_validate(token: str):
+    result = validate_audit_token(token)
+    return result
+
+
+@app.get("/api/audit-share/{token}/download")
+async def api_audit_share_download(token: str):
+    try:
+        result = download_audit_by_token(token)
+    except AuditShareError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
+    file_path = result["file_path"]
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="导出文件不存在")
+
+    return FileResponse(
+        file_path,
+        media_type="text/csv",
+        filename=result["filename"],
+    )
+
+
+@app.post("/api/audit-share/{token_id}/revoke")
+async def api_audit_share_revoke(token_id: int, req: AuditShareRevokeRequest):
+    try:
+        result = revoke_audit_token(
+            token_id=token_id,
+            revoked_by=req.revoked_by,
+        )
+        return {"success": True, **result}
+    except AuditShareError as e:
+        return JSONResponse(
+            status_code=400,
+            content={"success": False, "error": str(e)},
+        )
+
+
+@app.post("/api/audit-share/{token_id}/reissue")
+async def api_audit_share_reissue(token_id: int, req: AuditShareReissueRequest):
+    try:
+        result = reissue_audit_token(
+            token_id=token_id,
+            applicant=req.applicant,
+            applicant_role=req.applicant_role,
+            expire_hours=req.expire_hours,
+            operator=req.operator,
+        )
+        return {"success": True, **result}
+    except AuditShareError as e:
+        return JSONResponse(
+            status_code=400,
+            content={"success": False, "error": str(e)},
+        )
+
+
+@app.get("/api/audit-share/tokens")
+async def api_list_audit_tokens(
+    batch_id: Optional[str] = None,
+    status: Optional[str] = None,
+    limit: int = 50,
+):
+    return list_audit_tokens(batch_id=batch_id, status=status, limit=limit)
+
+
+@app.get("/api/audit-share/logs")
+async def api_list_audit_share_logs(
+    batch_id: Optional[str] = None,
+    token_id: Optional[int] = None,
+    event_type: Optional[str] = None,
+    limit: int = 100,
+):
+    return list_audit_share_logs(
+        batch_id=batch_id,
+        token_id=token_id,
+        event_type=event_type,
+        limit=limit,
+    )

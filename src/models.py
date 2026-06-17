@@ -273,6 +273,61 @@ def init_db() -> None:
     """)
 
     cur.execute("""
+        CREATE TABLE IF NOT EXISTS audit_tokens (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            token TEXT NOT NULL UNIQUE,
+            batch_id TEXT NOT NULL,
+            applicant TEXT NOT NULL,
+            applicant_role TEXT NOT NULL DEFAULT 'viewer',
+            status TEXT NOT NULL DEFAULT 'active',
+            expires_at TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            revoked_at TEXT,
+            revoked_by TEXT,
+            reissued_from INTEGER,
+            last_download_at TEXT,
+            download_count INTEGER NOT NULL DEFAULT 0,
+            FOREIGN KEY (batch_id) REFERENCES batch_predictions(batch_id),
+            FOREIGN KEY (reissued_from) REFERENCES audit_tokens(id)
+        )
+    """)
+
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_audit_tokens_token ON audit_tokens(token)
+    """)
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_audit_tokens_batch ON audit_tokens(batch_id)
+    """)
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_audit_tokens_status ON audit_tokens(status)
+    """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS audit_share_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            token_id INTEGER,
+            batch_id TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            operator TEXT,
+            applicant TEXT,
+            details TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (token_id) REFERENCES audit_tokens(id),
+            FOREIGN KEY (batch_id) REFERENCES batch_predictions(batch_id)
+        )
+    """)
+
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_audit_share_logs_batch ON audit_share_logs(batch_id)
+    """)
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_audit_share_logs_token ON audit_share_logs(token_id)
+    """)
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_audit_share_logs_event ON audit_share_logs(event_type)
+    """)
+
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS filter_schemes (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
